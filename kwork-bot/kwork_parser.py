@@ -46,45 +46,64 @@ async def fetch_new_orders() -> list[dict]:
     """Собирает заказы по всем настроенным категориям и фильтрует по ключевым словам."""
     from storage import is_seen
 
+    logger.info("Парсинг начался")
+
     all_new: list[dict] = []
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=[
-                "--ignore-certificate-errors",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-            ],
-        )
-        page = await browser.new_page(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
-        )
-
-        for category_id in settings.KWORK_CATEGORY_IDS:
+    try:
+        async with async_playwright() as p:
             try:
-                orders = await fetch_orders_for_category(page, category_id)
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=[
+                        "--ignore-certificate-errors",
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
+                    ],
+                )
             except Exception as e:
-                print(f"[parser] Ошибка при обходе категории {category_id}: {e}")
-                continue
+                logger.error("Не удалось запустить браузер Playwright: %s", e)
+                return []
 
-            for order in orders:
-                if not order.get("id") or is_seen(order["id"]):
-                    continue
+            try:
+                page = await browser.new_page(
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0.0.0 Safari/537.36"
+                    )
+                )
 
-                if settings.KEYWORDS:
-                    text = f"{order.get('title', '')} {order.get('description', '')}".lower()
-                    if not any(kw.lower() in text for kw in settings.KEYWORDS):
+                for category_id in settings.KWORK_CATEGORY_IDS:
+                    try:
+                        orders = await fetch_orders_for_category(page, category_id)
+                    except Exception as e:
+                        logger.error(
+                            "Ошибка при обходе категории %s: %s", category_id, e
+                        )
                         continue
 
-                all_new.append(order)
+                    for order in orders:
+                        if not order.get("id") or is_seen(order["id"]):
+                            continue
 
-        await browser.close()
+                        if settings.KEYWORDS:
+                            text = f"{order.get('title', '')} {order.get('description', '')}".lower()
+                            if not any(kw.lower() in text for kw in settings.KEYWORDS):
+                                continue
+
+                        all_new.append(order)
+            finally:
+                try:
+                    await browser.close()
+                except Exception as e:
+                    logger.error("Ошибка при закрытии браузера Playwright: %s", e)
+    except Exception as e:
+        logger.error("Ошибка Playwright в fetch_new_orders: %s", e)
+        return []
+
+    logger.info("Парсинг закончился, найдено %d заказов", len(all_new))
 
     return all_new

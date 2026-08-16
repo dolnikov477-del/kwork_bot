@@ -133,6 +133,7 @@ async def polling_loop() -> None:
     while True:
         try:
             new_orders = await fetch_new_orders()
+            logger.info("Найдено новых заказов: %d", len(new_orders))
             for order in new_orders:
                 await notify_new_order(order)
         except Exception as e:
