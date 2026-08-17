@@ -1,5 +1,14 @@
 """
-Парсер заказов Kwork через простой HTTP-запрос + BeautifulSoup.
+Парсер заказов Kwork через Playwright (браузер) + BeautifulSoup.
+
+Kwork блокирует простые HTTP-запросы (httpx) - отвечает редиректом
+на /not_access.php, а затем 403 Forbidden. Поэтому страницы
+загружаются реальным браузером (Playwright/Chromium), который
+использует полноценный браузерный контекст, cookies, правильный
+User-Agent и выполняет JavaScript - это позволяет обойти блокировку.
+
+HTML полученной страницы разбирается через BeautifulSoup - этот
+парсинг работает надёжно и оставлен без изменений.
 
 Логика:
 - при первом запуске запоминает все уже существующие заказы;
@@ -12,8 +21,8 @@ from __future__ import annotations
 import logging
 import re
 
-import httpx
 from bs4 import BeautifulSoup
+from playwright.async_api import Browser, Page, async_playwright
 
 from config import settings
 from storage import is_seen, save_order
@@ -22,18 +31,11 @@ logger = logging.getLogger(__name__)
 
 KWORK_BASE_URL = "https://kwork.ru/projects"
 
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": (
-        "text/html,application/xhtml+xml,application/xml;"
-        "q=0.9,image/webp,*/*;q=0.8"
-    ),
-    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-}
+_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
 
 _ID_RE = re.compile(r"/projects/(\d+)")
 
@@ -98,26 +100,56 @@ def _parse_orders_from_html(html: str) -> list[dict]:
     return orders
 
 
-async def fetch_orders_for_category(category_id: str) -> list[dict]:
+async def fetch_orders_for_category(
+    page: Page,
+    category_id: str,
+) -> list[dict]:
     """
-    Получает заказы одной категории простым HTTP-запросом.
+    Получает заказы одной категории через уже открытую страницу
+    браузера Playwright.
     """
 
     url = f"{KWORK_BASE_URL}?fc={category_id}"
 
     try:
-        async with httpx.AsyncClient(
-            headers=_HEADERS,
-            timeout=30.0,
-            follow_redirects=True,
-        ) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            html = response.text
+        response = await page.goto(
+            url,
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
+
+        status = response.status if response else None
+
+        logger.info(
+            "Категория %s: HTTP статус ответа: %s",
+            category_id,
+            status,
+        )
+        logger.info(
+            "Категория %s: финальный URL после редиректов: %s",
+            category_id,
+            page.url,
+        )
+
+        title = await page.title()
+
+        logger.info(
+            "Категория %s: title страницы: %s",
+            category_id,
+            title,
+        )
+
+        html = await page.content()
+
+        logger.info(
+            "Категория %s: первые 300 символов контента: %s",
+            category_id,
+            html[:300],
+        )
 
     except Exception as e:
         logger.error(
-            "Категория %s: ошибка HTTP-запроса: %s",
+            "Категория %s: ошибка при загрузке страницы браузером: %s",
             category_id,
             e,
         )
@@ -136,24 +168,45 @@ async def fetch_orders_for_category(category_id: str) -> list[dict]:
 
 async def fetch_all_orders() -> list[dict]:
     """
-    Получает все заказы из всех настроенных категорий
-    через обычные HTTP-запросы (без браузера).
+    Получает все заказы из всех настроенных категорий,
+    используя один браузер и одну страницу (page) для всех
+    категорий - это быстрее, чем открывать новый браузер
+    на каждую категорию.
     """
 
     all_orders: list[dict] = []
 
-    for category_id in settings.KWORK_CATEGORY_IDS:
+    async with async_playwright() as playwright:
+        browser: Browser = await playwright.chromium.launch(
+            headless=True,
+        )
+
         try:
-            orders = await fetch_orders_for_category(category_id)
-
-            all_orders.extend(orders)
-
-        except Exception as e:
-            logger.error(
-                "Ошибка при обходе категории %s: %s",
-                category_id,
-                e,
+            context = await browser.new_context(
+                user_agent=_USER_AGENT,
+                locale="ru-RU",
             )
+
+            page: Page = await context.new_page()
+
+            for category_id in settings.KWORK_CATEGORY_IDS:
+                try:
+                    orders = await fetch_orders_for_category(
+                        page,
+                        category_id,
+                    )
+
+                    all_orders.extend(orders)
+
+                except Exception as e:
+                    logger.error(
+                        "Ошибка при обходе категории %s: %s",
+                        category_id,
+                        e,
+                    )
+
+        finally:
+            await browser.close()
 
     # Убираем дубликаты, если один заказ попался
     # в нескольких категориях.
