@@ -171,6 +171,88 @@ async def fetch_orders_for_category(
 
         html = await page.content()
 
+        # --- Диагностика содержимого страницы ---
+        # Помогает понять, получает ли Playwright реальный
+        # HTML с карточками, или пустой SSR-шаблон / блокировку.
+
+        logger.info(
+            "Категория %s: [DIAG] длина HTML: %d",
+            category_id,
+            len(html),
+        )
+
+        logger.info(
+            "Категория %s: [DIAG] 'wants-card' в HTML (текст): %s",
+            category_id,
+            "wants-card" in html,
+        )
+
+        logger.info(
+            "Категория %s: [DIAG] 'заказ' в HTML: %s",
+            category_id,
+            "заказ" in html.lower(),
+        )
+
+        logger.info(
+            "Категория %s: [DIAG] другие русские слова "
+            "('проект', 'категор', 'бюджет') в HTML: %s / %s / %s",
+            category_id,
+            "проект" in html.lower(),
+            "категор" in html.lower(),
+            "бюджет" in html.lower(),
+        )
+
+        logger.info(
+            "Категория %s: [DIAG] 'body' в HTML: %s",
+            category_id,
+            "body" in html.lower(),
+        )
+
+        logger.info(
+            "Категория %s: [DIAG] первые 1000 символов HTML:\n%s",
+            category_id,
+            html[:1000],
+        )
+
+        diag_soup = BeautifulSoup(html, "html.parser")
+
+        diag_div_count = len(diag_soup.find_all("div"))
+
+        logger.info(
+            "Категория %s: [DIAG] всего div-элементов в HTML: %d",
+            category_id,
+            diag_div_count,
+        )
+
+        diag_wants_card_count = len(diag_soup.select(".wants-card"))
+
+        logger.info(
+            "Категория %s: [DIAG] .wants-card через селектор: %d "
+            "(текст 'wants-card' в HTML: %s)",
+            category_id,
+            diag_wants_card_count,
+            "wants-card" in html,
+        )
+
+        for marker in (
+            "no orders",
+            "nothing found",
+            "error",
+            "not found",
+            "access denied",
+            "captcha",
+            "ничего не найдено",
+            "нет заказов",
+        ):
+            logger.info(
+                "Категория %s: [DIAG] маркер '%s' в HTML: %s",
+                category_id,
+                marker,
+                marker in html.lower(),
+            )
+
+        # --- Конец диагностики ---
+
         orders = _parse_orders_from_html(html)
 
         logger.info(
