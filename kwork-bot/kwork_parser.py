@@ -206,12 +206,43 @@ async def initialize_seen_orders() -> int:
     return added
 
 
+def _matches_keywords(order: dict) -> bool:
+    """
+    Проверяет, содержит ли заказ хотя бы одно ключевое слово
+    из settings.KEYWORDS в title и/или description
+    (без учёта регистра).
+
+    Если KEYWORDS пуст - фильтрация не применяется,
+    и заказ считается подходящим.
+    """
+
+    keywords = settings.KEYWORDS
+
+    if not keywords:
+        return True
+
+    title = (order.get("title") or "").lower()
+    description = (order.get("description") or "").lower()
+
+    text = f"{title} {description}"
+
+    for keyword in keywords:
+        if keyword.lower() in text:
+            return True
+
+    return False
+
+
 async def fetch_new_orders() -> list[dict]:
     """
-    Получает только новые заказы.
+    Получает только новые заказы, подходящие по ключевым словам.
 
     Заказ считается новым, если его ID ещё нет
     в базе просмотренных заказов.
+
+    Заказ добавляется в результат только если он
+    содержит минимум одно ключевое слово из
+    settings.KEYWORDS (в title и/или description).
     """
 
     logger.info("Парсинг заказов начат")
@@ -219,6 +250,7 @@ async def fetch_new_orders() -> list[dict]:
     orders = await fetch_all_orders()
 
     new_orders: list[dict] = []
+    matched_count = 0
 
     for order in orders:
         order_id = order.get("id")
@@ -229,11 +261,21 @@ async def fetch_new_orders() -> list[dict]:
         if is_seen(order_id):
             continue
 
+        if not _matches_keywords(order):
+            continue
+
+        matched_count += 1
         new_orders.append(order)
 
     logger.info(
+        "Найдено %d заказов, из них %d содержат ключевые слова",
+        len(orders),
+        matched_count,
+    )
+
+    logger.info(
         "Парсинг завершён. "
-        "Всего найдено карточек: %d, новых: %d",
+        "Всего найдено карточек: %d, новых (с учётом ключевых слов): %d",
         len(orders),
         len(new_orders),
     )
