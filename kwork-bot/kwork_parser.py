@@ -1,19 +1,11 @@
 """
-Парсер заказов Kwork через Playwright (браузер) + BeautifulSoup.
-
-Kwork блокирует простые HTTP-запросы (httpx) - отвечает редиректом
-на /not_access.php, а затем 403 Forbidden. Поэтому страницы
-загружаются реальным браузером (Playwright/Chromium), который
-использует полноценный браузерный контекст, cookies, правильный
-User-Agent и выполняет JavaScript - это позволяет обойти блокировку.
-
-HTML полученной страницы разбирается через BeautifulSoup - этот
-парсинг работает надёжно и оставлен без изменений.
+Парсер заказов Kwork через Playwright + BeautifulSoup.
 
 Логика:
-- при первом запуске запоминает все уже существующие заказы;
-- старые заказы НЕ отправляет;
-- после этого отправляет только заказы, которых раньше не видел.
+- при первом запуске текущие заказы сохраняются в базу и НЕ отправляются;
+- после первого запуска отправляются только действительно новые заказы;
+- фильтрация идёт только по выбранным категориям Kwork;
+- ключевые слова не используются.
 """
 
 from __future__ import annotations
@@ -41,9 +33,7 @@ _ID_RE = re.compile(r"/projects/(\d+)")
 
 
 def _parse_orders_from_html(html: str) -> list[dict]:
-    """
-    Разбирает HTML страницы категории и возвращает список заказов.
-    """
+    """Извлекает заказы из HTML страницы Kwork."""
 
     soup = BeautifulSoup(html, "html.parser")
 
@@ -59,33 +49,50 @@ def _parse_orders_from_html(html: str) -> list[dict]:
         if link is None:
             link = card.select_one("a[href*='/projects/']")
 
-        href = link.get("href") if link else None
+        if link is None:
+            continue
 
-        id_match = _ID_RE.search(href) if href else None
+        href = link.get("href")
 
-        order_id = id_match.group(1) if id_match else None
+        if not href:
+            continue
+
+        id_match = _ID_RE.search(href)
+
+        if not id_match:
+            continue
+
+        order_id = id_match.group(1)
 
         title_el = card.select_one(".wants-card__header-title")
-        title = title_el.get_text(strip=True) if title_el else (
-            link.get_text(strip=True) if link else ""
+
+        if title_el:
+            title = title_el.get_text(" ", strip=True)
+        else:
+            title = link.get_text(" ", strip=True)
+
+        description_el = card.select_one(
+            ".wants-card__description-text"
         )
 
-        description_el = card.select_one(".wants-card__description-text")
         description = (
-            description_el.get_text(strip=True) if description_el else ""
+            description_el.get_text(" ", strip=True)
+            if description_el
+            else ""
         )
 
         price_el = card.select_one(".wants-card__right")
-        price = price_el.get_text(strip=True) if price_el else ""
 
-        if not title or not order_id:
-            continue
+        price = (
+            price_el.get_text(" ", strip=True)
+            if price_el
+            else ""
+        )
 
-        url = (
-            href
-            if href.startswith("http")
-            else f"https://kwork.ru{href}"
-        ) if href else None
+        if href.startswith("http"):
+            url = href
+        else:
+            url = f"https://kwork.ru{href}"
 
         orders.append(
             {
@@ -104,12 +111,15 @@ async def fetch_orders_for_category(
     page: Page,
     category_id: str,
 ) -> list[dict]:
-    """
-    Получает заказы одной категории через уже открытую страницу
-    браузера Playwright.
-    """
+    """Загружает заказы конкретной категории."""
 
     url = f"{KWORK_BASE_URL}?fc={category_id}"
+
+    logger.info(
+        "Открываем категорию %s: %s",
+        category_id,
+        url,
+    )
 
     try:
         response = await page.goto(
@@ -121,12 +131,13 @@ async def fetch_orders_for_category(
         status = response.status if response else None
 
         logger.info(
-            "Категория %s: HTTP статус ответа: %s",
+            "Категория %s: HTTP статус: %s",
             category_id,
             status,
         )
+
         logger.info(
-            "Категория %s: финальный URL после редиректов: %s",
+            "Категория %s: финальный URL: %s",
             category_id,
             page.url,
         )
@@ -134,62 +145,110 @@ async def fetch_orders_for_category(
         title = await page.title()
 
         logger.info(
-            "Категория %s: title страницы: %s",
+            "Категория %s: title: %s",
             category_id,
             title,
         )
 
+        # Даём JavaScript Kwork время отрисовать карточки.
+        await page.wait_for_timeout(3000)
+
+        # Ждём появления карточек, но не падаем,
+        # если их пока нет.
+        try:
+            await page.wait_for_selector(
+                ".wants-card",
+                timeout=10000,
+            )
+        except Exception:
+            logger.warning(
+                "Категория %s: .wants-card не появился за 10 секунд",
+                category_id,
+            )
+
+        # Небольшое ожидание после появления карточек.
+        await page.wait_for_timeout(1000)
+
         html = await page.content()
 
+        orders = _parse_orders_from_html(html)
+
         logger.info(
-            "Категория %s: первые 300 символов контента: %s",
+            "Категория %s: найдено карточек: %d",
             category_id,
-            html[:300],
+            len(orders),
         )
+
+        return orders
 
     except Exception as e:
         logger.error(
-            "Категория %s: ошибка при загрузке страницы браузером: %s",
+            "Категория %s: ошибка загрузки: %s",
             category_id,
             e,
         )
+
         return []
-
-    orders = _parse_orders_from_html(html)
-
-    logger.info(
-        "Категория %s: найдено карточек: %d",
-        category_id,
-        len(orders),
-    )
-
-    return orders
 
 
 async def fetch_all_orders() -> list[dict]:
     """
-    Получает все заказы из всех настроенных категорий,
-    используя один браузер и одну страницу (page) для всех
-    категорий - это быстрее, чем открывать новый браузер
-    на каждую категорию.
+    Получает заказы из всех настроенных категорий.
     """
 
     all_orders: list[dict] = []
 
     async with async_playwright() as playwright:
+
         browser: Browser = await playwright.chromium.launch(
             headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+            ],
         )
 
         try:
             context = await browser.new_context(
                 user_agent=_USER_AGENT,
                 locale="ru-RU",
+                viewport={
+                    "width": 1920,
+                    "height": 1080,
+                },
             )
 
             page: Page = await context.new_page()
 
+            # Сначала открываем главную страницу.
+            # Это помогает получить базовые cookies Kwork.
+            try:
+                logger.info("Открываем главную страницу Kwork...")
+
+                await page.goto(
+                    "https://kwork.ru/",
+                    wait_until="domcontentloaded",
+                    timeout=30000,
+                )
+
+                await page.wait_for_timeout(2000)
+
+                logger.info(
+                    "Главная страница открыта. URL: %s",
+                    page.url,
+                )
+
+            except Exception as e:
+                logger.warning(
+                    "Не удалось открыть главную страницу Kwork: %s",
+                    e,
+                )
+
+            # Обходим все категории.
             for category_id in settings.KWORK_CATEGORY_IDS:
+
                 try:
                     orders = await fetch_orders_for_category(
                         page,
@@ -200,40 +259,56 @@ async def fetch_all_orders() -> list[dict]:
 
                 except Exception as e:
                     logger.error(
-                        "Ошибка при обходе категории %s: %s",
+                        "Ошибка категории %s: %s",
                         category_id,
                         e,
                     )
 
+            await context.close()
+
         finally:
             await browser.close()
 
-    # Убираем дубликаты, если один заказ попался
-    # в нескольких категориях.
-    unique_orders = {}
+    # Убираем дубликаты.
+    unique_orders: dict[str, dict] = {}
 
     for order in all_orders:
+
         order_id = order.get("id")
 
         if order_id:
             unique_orders[order_id] = order
 
-    return list(unique_orders.values())
+    result = list(unique_orders.values())
+
+    logger.info(
+        "Всего уникальных заказов после обхода категорий: %d",
+        len(result),
+    )
+
+    return result
 
 
 async def initialize_seen_orders() -> int:
     """
-    Первый запуск.
+    Первичная инициализация.
 
-    Все заказы, которые существуют прямо сейчас,
-    считаются уже существующими.
+    Все заказы, которые существуют на момент запуска,
+    записываются в базу.
 
-    Они НЕ отправляются в Telegram.
+    В Telegram они НЕ отправляются.
     """
 
     logger.info(
-        "Первичная инициализация базы: "
-        "получаем текущие заказы..."
+        "========================================"
+    )
+
+    logger.info(
+        "ПЕРВЫЙ ЗАПУСК: запоминаем существующие заказы"
+    )
+
+    logger.info(
+        "========================================"
     )
 
     orders = await fetch_all_orders()
@@ -241,96 +316,86 @@ async def initialize_seen_orders() -> int:
     added = 0
 
     for order in orders:
+
         order_id = order.get("id")
 
         if not order_id:
             continue
 
         if not is_seen(order_id):
+
             save_order(order)
+
             added += 1
 
     logger.info(
-        "Первичная инициализация завершена. "
-        "Добавлено старых заказов в базу: %d",
+        "Первичная инициализация завершена."
+    )
+
+    logger.info(
+        "Сохранено существующих заказов: %d",
         added,
     )
 
     return added
 
 
-def _matches_keywords(order: dict) -> bool:
-    """
-    Проверяет, содержит ли заказ хотя бы одно ключевое слово
-    из settings.KEYWORDS в title и/или description
-    (без учёта регистра).
-
-    Если KEYWORDS пуст - фильтрация не применяется,
-    и заказ считается подходящим.
-    """
-
-    keywords = settings.KEYWORDS
-
-    if not keywords:
-        return True
-
-    title = (order.get("title") or "").lower()
-    description = (order.get("description") or "").lower()
-
-    text = f"{title} {description}"
-
-    for keyword in keywords:
-        if keyword.lower() in text:
-            return True
-
-    return False
-
-
 async def fetch_new_orders() -> list[dict]:
     """
-    Получает только новые заказы, подходящие по ключевым словам.
+    Возвращает только новые заказы.
 
-    Заказ считается новым, если его ID ещё нет
-    в базе просмотренных заказов.
+    Ключевые слова НЕ используются.
 
-    Заказ добавляется в результат только если он
-    содержит минимум одно ключевое слово из
-    settings.KEYWORDS (в title и/или description).
+    Новый заказ определяется исключительно по ID:
+    если ID нет в базе — заказ новый.
     """
 
-    logger.info("Парсинг заказов начат")
+    logger.info(
+        "========================================"
+    )
+
+    logger.info(
+        "Начинаем проверку новых заказов"
+    )
+
+    logger.info(
+        "========================================"
+    )
 
     orders = await fetch_all_orders()
 
     new_orders: list[dict] = []
-    matched_count = 0
 
     for order in orders:
+
         order_id = order.get("id")
 
         if not order_id:
             continue
 
+        # Уже видели — пропускаем.
         if is_seen(order_id):
             continue
 
-        if not _matches_keywords(order):
-            continue
-
-        matched_count += 1
+        # Новый заказ.
         new_orders.append(order)
 
     logger.info(
-        "Найдено %d заказов, из них %d содержат ключевые слова",
+        "Всего найдено заказов: %d",
         len(orders),
-        matched_count,
     )
 
     logger.info(
-        "Парсинг завершён. "
-        "Всего найдено карточек: %d, новых (с учётом ключевых слов): %d",
-        len(orders),
+        "Новых заказов: %d",
         len(new_orders),
     )
+
+    for order in new_orders:
+
+        logger.info(
+            "НОВЫЙ ЗАКАЗ: ID=%s | %s",
+            order["id"],
+            order.get("title", ""),
+        )
 
     return new_orders
