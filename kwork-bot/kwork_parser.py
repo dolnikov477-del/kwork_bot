@@ -1,10 +1,16 @@
 """
 Парсер заказов Kwork через Playwright.
+
+Логика:
+- при первом запуске запоминает все уже существующие заказы;
+- старые заказы НЕ отправляет;
+- после этого отправляет только заказы, которых раньше не видел.
 """
 
 from __future__ import annotations
 
 import logging
+
 from playwright.async_api import async_playwright
 
 from config import settings
@@ -19,17 +25,29 @@ _EXTRACT_JS = """
     const cards = Array.from(document.querySelectorAll('.want-card'));
 
     return cards.map(card => {
-        const link = card.querySelector('.wants-card__header-title a[href*="/projects/"]');
-        const href = link ? link.getAttribute('href') : null;
+        const link = card.querySelector(
+            '.wants-card__header-title a[href*="/projects/"]'
+        );
 
-        const idMatch = href ? href.match(/projects\\/(\\d+)/) : null;
+        const href = link
+            ? link.getAttribute('href')
+            : null;
+
+        const idMatch = href
+            ? href.match(/projects\\/(\\d+)/)
+            : null;
 
         const title = link?.innerText?.trim() || '';
+
         const description =
-            card.querySelector('.wants-card__description-text')?.innerText?.trim() || '';
+            card.querySelector(
+                '.wants-card__description-text'
+            )?.innerText?.trim() || '';
 
         const price =
-            card.querySelector('.wants-card__right')?.innerText?.trim() || '';
+            card.querySelector(
+                '.wants-card__right'
+            )?.innerText?.trim() || '';
 
         return {
             id: idMatch ? idMatch[1] : href,
@@ -37,15 +55,26 @@ _EXTRACT_JS = """
             description,
             price,
             url: href
-                ? (href.startsWith('http') ? href : 'https://kwork.ru' + href)
+                ? (
+                    href.startsWith('http')
+                        ? href
+                        : 'https://kwork.ru' + href
+                )
                 : null,
         };
-    }).filter(c => c.title && c.id);
+    }).filter(order => order.title && order.id);
 }
 """
 
 
-async def fetch_orders_for_category(page, category_id: str) -> list[dict]:
+async def fetch_orders_for_category(
+    page,
+    category_id: str,
+) -> list[dict]:
+    """
+    Получает заказы одной категории.
+    """
+
     url = f"{KWORK_BASE_URL}?fc={category_id}"
 
     await page.goto(
@@ -56,24 +85,25 @@ async def fetch_orders_for_category(page, category_id: str) -> list[dict]:
 
     await page.wait_for_timeout(1500)
 
-    return await page.evaluate(_EXTRACT_JS)
+    orders = await page.evaluate(_EXTRACT_JS)
+
+    logger.info(
+        "Категория %s: найдено карточек: %d",
+        category_id,
+        len(orders),
+    )
+
+    return orders
 
 
-async def fetch_new_orders() -> list[dict]:
+async def fetch_all_orders() -> list[dict]:
     """
-    Получает заказы из настроенных категорий.
-
-    Первый запуск:
-        существующие заказы только запоминаются.
-
-    Последующие запуски:
-        возвращаются только действительно новые заказы.
+    Получает все заказы из всех настроенных категорий.
     """
 
-    all_new: list[dict] = []
+    all_orders: list[dict] = []
 
     async with async_playwright() as p:
-
         browser = await p.chromium.launch(
             headless=True,
             args=[
@@ -93,78 +123,107 @@ async def fetch_new_orders() -> list[dict]:
             )
         )
 
-        first_run = True
-
-        # Проверяем, есть ли уже хоть один сохранённый заказ.
-        # Если база пустая — считаем это первым запуском.
         try:
-            test_orders = await fetch_orders_for_category(
-                page,
-                settings.KWORK_CATEGORY_IDS[0]
-            )
+            for category_id in settings.KWORK_CATEGORY_IDS:
+                try:
+                    orders = await fetch_orders_for_category(
+                        page,
+                        category_id,
+                    )
 
-            if test_orders:
-                first_run = all(
-                    not is_seen(order["id"])
-                    for order in test_orders
-                    if order.get("id")
-                )
+                    all_orders.extend(orders)
 
-        except Exception as e:
-            logger.exception(
-                "Ошибка проверки первого запуска: %s",
-                e,
-            )
+                except Exception as e:
+                    logger.error(
+                        "Ошибка при обходе категории %s: %s",
+                        category_id,
+                        e,
+                    )
 
-        for category_id in settings.KWORK_CATEGORY_IDS:
+        finally:
+            await browser.close()
 
-            try:
-                orders = await fetch_orders_for_category(
-                    page,
-                    category_id,
-                )
+    # Убираем дубликаты, если один заказ попался
+    # в нескольких категориях.
+    unique_orders = {}
 
-                logger.info(
-                    "Категория %s: найдено заказов: %s",
-                    category_id,
-                    len(orders),
-                )
+    for order in all_orders:
+        order_id = order.get("id")
 
-            except Exception as e:
-                logger.exception(
-                    "Ошибка при обходе категории %s: %s",
-                    category_id,
-                    e,
-                )
-                continue
+        if order_id:
+            unique_orders[order_id] = order
 
-            for order in orders:
+    return list(unique_orders.values())
 
-                order_id = order.get("id")
 
-                if not order_id:
-                    continue
+async def initialize_seen_orders() -> int:
+    """
+    Первый запуск.
 
-                # Уже видели этот заказ
-                if is_seen(order_id):
-                    continue
+    Все заказы, которые существуют прямо сейчас,
+    считаются уже существующими.
 
-                # Первый запуск:
-                # НЕ отправляем старые заказы,
-                # просто сохраняем их.
-                if first_run:
-                    save_order(order)
-                    continue
-
-                # Новый заказ
-                save_order(order)
-                all_new.append(order)
-
-        await browser.close()
+    Они НЕ отправляются в Telegram.
+    """
 
     logger.info(
-        "Парсинг завершён. Новых заказов: %s",
-        len(all_new),
+        "Первичная инициализация базы: "
+        "получаем текущие заказы..."
     )
 
-    return all_new
+    orders = await fetch_all_orders()
+
+    added = 0
+
+    for order in orders:
+        order_id = order.get("id")
+
+        if not order_id:
+            continue
+
+        if not is_seen(order_id):
+            save_order(order)
+            added += 1
+
+    logger.info(
+        "Первичная инициализация завершена. "
+        "Добавлено старых заказов в базу: %d",
+        added,
+    )
+
+    return added
+
+
+async def fetch_new_orders() -> list[dict]:
+    """
+    Получает только новые заказы.
+
+    Заказ считается новым, если его ID ещё нет
+    в базе просмотренных заказов.
+    """
+
+    logger.info("Парсинг заказов начат")
+
+    orders = await fetch_all_orders()
+
+    new_orders: list[dict] = []
+
+    for order in orders:
+        order_id = order.get("id")
+
+        if not order_id:
+            continue
+
+        if is_seen(order_id):
+            continue
+
+        new_orders.append(order)
+
+    logger.info(
+        "Парсинг завершён. "
+        "Всего найдено карточек: %d, новых: %d",
+        len(orders),
+        len(new_orders),
+    )
+
+    return new_orders
