@@ -18,14 +18,14 @@ class Settings:
 
     # Groq
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
-    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
     # Категории Kwork
     KWORK_CATEGORY_IDS: list[str] = _split_csv(
         os.getenv("KWORK_CATEGORY_IDS", "38,39,41,79,113")
     )
 
-    # НЕ фильтруем по ключевым словам.
+    # Не фильтруем по ключевым словам.
     # Парсим только выбранные категории.
     KEYWORDS: list[str] = []
 
