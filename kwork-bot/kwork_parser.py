@@ -22,7 +22,7 @@ KWORK_BASE_URL = "https://kwork.ru/projects"
 
 _EXTRACT_JS = """
 () => {
-    const cards = Array.from(document.querySelectorAll('.want-card'));
+    const cards = Array.from(document.querySelectorAll('.wants-card'));
 
     return cards.map(card => {
         const link = card.querySelector(
