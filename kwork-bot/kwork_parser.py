@@ -77,13 +77,82 @@ async def fetch_orders_for_category(
 
     url = f"{KWORK_BASE_URL}?fc={category_id}"
 
-    await page.goto(
+    response = await page.goto(
         url,
         wait_until="domcontentloaded",
         timeout=30000,
     )
 
     await page.wait_for_timeout(1500)
+
+    # --- Диагностические логи ---
+    # Помогают понять, что реально получил браузер:
+    # заблокирован ли запрос, отдаёт ли Kwork другой HTML,
+    # успевает ли прогрузиться JS-контент со карточками.
+
+    try:
+        page_title = await page.title()
+    except Exception as e:
+        page_title = f"<ошибка получения title: {e}>"
+
+    try:
+        response_status = response.status if response else None
+    except Exception as e:
+        response_status = f"<ошибка получения статуса: {e}>"
+
+    try:
+        html_content = await page.content()
+    except Exception as e:
+        html_content = ""
+        logger.error(
+            "Категория %s: ошибка получения HTML: %s",
+            category_id,
+            e,
+        )
+
+    try:
+        cards_count = await page.locator(".wants-card").count()
+    except Exception as e:
+        cards_count = f"<ошибка count(): {e}>"
+
+    has_wants_card_text = "wants-card" in html_content
+
+    logger.info(
+        "Категория %s: title страницы: %r",
+        category_id,
+        page_title,
+    )
+    logger.info(
+        "Категория %s: текущий URL: %s",
+        category_id,
+        page.url,
+    )
+    logger.info(
+        "Категория %s: HTTP статус ответа: %s",
+        category_id,
+        response_status,
+    )
+    logger.info(
+        "Категория %s: длина HTML: %d",
+        category_id,
+        len(html_content),
+    )
+    logger.info(
+        "Категория %s: количество элементов .wants-card (count()): %s",
+        category_id,
+        cards_count,
+    )
+    logger.info(
+        "Категория %s: текст 'wants-card' присутствует в HTML: %s",
+        category_id,
+        has_wants_card_text,
+    )
+    logger.info(
+        "Категория %s: первые 500 символов HTML: %s",
+        category_id,
+        html_content[:500],
+    )
+    # --- Конец диагностических логов ---
 
     orders = await page.evaluate(_EXTRACT_JS)
 
