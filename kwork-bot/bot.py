@@ -16,8 +16,8 @@ from aiogram.types import (
 
 from ai_responder import generate_reply
 from config import settings
-from kwork_parser import fetch_new_orders
-from storage import get_order, init_db, save_order
+from kwork_parser import fetch_all_orders, fetch_new_orders
+from storage import get_order, init_db, is_seen, save_order
 
 logger = logging.getLogger(__name__)
 
@@ -154,14 +154,6 @@ async def on_generate_reply(callback: CallbackQuery) -> None:
 
 @retry_on_network_error(max_retries=5, delay=3.0)
 async def notify_new_order(order: dict) -> None:
-    save_order(order)
-
-    logger.info(
-        "Отправка нового заказа %s в Telegram: title=%s",
-        order["id"],
-        order.get("title", ""),
-    )
-
     await bot.send_message(
         chat_id=settings.TELEGRAM_CHAT_ID,
         text=_format_order_message(order),
@@ -171,38 +163,52 @@ async def notify_new_order(order: dict) -> None:
         ),
     )
 
+    # Сохраняем только после успешной отправки.
+    save_order(order)
+
     logger.info(
-        "Новый заказ %s отправлен в Telegram",
+        "Новый заказ %s отправлен и сохранён",
         order["id"],
     )
 
 
 async def initialize_seen_orders() -> None:
     """
-    Первый запуск после деплоя.
+    Первый запуск.
 
-    Получаем текущие заказы Kwork и записываем их в базу,
-    НО НЕ отправляем их в Telegram.
-
-    Таким образом старые заказы становятся "известными",
-    а отправляться будут только те, которые появятся
-    после начала работы бота.
+    Все заказы, которые уже существуют на Kwork,
+    записываются в базу без отправки в Telegram.
     """
 
     logger.info(
-        "Первичная инициализация: получаю текущие заказы без отправки..."
+        "========================================"
+    )
+    logger.info(
+        "ПЕРВЫЙ ЗАПУСК: запоминаем существующие заказы"
+    )
+    logger.info(
+        "========================================"
     )
 
     try:
-        current_orders = await fetch_new_orders()
+        current_orders = await fetch_all_orders()
+
+        added = 0
 
         for order in current_orders:
-            save_order(order)
+            order_id = order.get("id")
+
+            if not order_id:
+                continue
+
+            if not is_seen(order_id):
+                save_order(order)
+                added += 1
 
         logger.info(
             "Первичная инициализация завершена. "
-            "Старых заказов добавлено в базу: %d",
-            len(current_orders),
+            "Сохранено старых заказов: %d",
+            added,
         )
 
     except Exception as e:
@@ -215,14 +221,21 @@ async def initialize_seen_orders() -> None:
 async def polling_loop() -> None:
     init_db()
 
-    # ВАЖНО:
-    # При запуске сначала запоминаем уже существующие заказы.
-    # Они НЕ отправляются пользователю.
+    # Один раз при запуске запоминаем всё,
+    # что уже было на Kwork.
     await initialize_seen_orders()
 
     logger.info(
-        "Мониторинг новых заказов запущен. "
-        "Теперь отправляются только новые заказы."
+        "========================================"
+    )
+    logger.info(
+        "МОНИТОРИНГ НОВЫХ ЗАКАЗОВ ЗАПУЩЕН"
+    )
+    logger.info(
+        "Старые заказы отправляться не будут."
+    )
+    logger.info(
+        "========================================"
     )
 
     while True:
