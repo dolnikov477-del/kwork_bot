@@ -41,7 +41,6 @@ KEYWORDS=сайт,бот,парсинг,лендинг
 python -m venv venv
 source venv/bin/activate      # на Windows: venv\Scripts\activate
 pip install -r requirements.txt
-playwright install chromium
 python main.py
 ```
 

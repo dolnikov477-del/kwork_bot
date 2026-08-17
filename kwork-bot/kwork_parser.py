@@ -1,5 +1,5 @@
 """
-Парсер заказов Kwork через Playwright.
+Парсер заказов Kwork через простой HTTP-запрос + BeautifulSoup.
 
 Логика:
 - при первом запуске запоминает все уже существующие заказы;
@@ -10,8 +10,10 @@
 from __future__ import annotations
 
 import logging
+import re
 
-from playwright.async_api import async_playwright
+import httpx
+from bs4 import BeautifulSoup
 
 from config import settings
 from storage import is_seen, save_order
@@ -20,141 +22,108 @@ logger = logging.getLogger(__name__)
 
 KWORK_BASE_URL = "https://kwork.ru/projects"
 
-_EXTRACT_JS = """
-() => {
-    const cards = Array.from(document.querySelectorAll('.wants-card'));
-
-    return cards.map(card => {
-        const link = card.querySelector(
-            '.wants-card__header-title a[href*="/projects/"]'
-        );
-
-        const href = link
-            ? link.getAttribute('href')
-            : null;
-
-        const idMatch = href
-            ? href.match(/projects\\/(\\d+)/)
-            : null;
-
-        const title = link?.innerText?.trim() || '';
-
-        const description =
-            card.querySelector(
-                '.wants-card__description-text'
-            )?.innerText?.trim() || '';
-
-        const price =
-            card.querySelector(
-                '.wants-card__right'
-            )?.innerText?.trim() || '';
-
-        return {
-            id: idMatch ? idMatch[1] : href,
-            title,
-            description,
-            price,
-            url: href
-                ? (
-                    href.startsWith('http')
-                        ? href
-                        : 'https://kwork.ru' + href
-                )
-                : null,
-        };
-    }).filter(order => order.title && order.id);
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;"
+        "q=0.9,image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
 }
-"""
+
+_ID_RE = re.compile(r"/projects/(\d+)")
 
 
-async def fetch_orders_for_category(
-    page,
-    category_id: str,
-) -> list[dict]:
+def _parse_orders_from_html(html: str) -> list[dict]:
     """
-    Получает заказы одной категории.
+    Разбирает HTML страницы категории и возвращает список заказов.
+    """
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    cards = soup.select(".wants-card")
+
+    orders: list[dict] = []
+
+    for card in cards:
+        link = card.select_one(
+            ".wants-card__header-title a[href*='/projects/']"
+        )
+
+        if link is None:
+            link = card.select_one("a[href*='/projects/']")
+
+        href = link.get("href") if link else None
+
+        id_match = _ID_RE.search(href) if href else None
+
+        order_id = id_match.group(1) if id_match else None
+
+        title_el = card.select_one(".wants-card__header-title")
+        title = title_el.get_text(strip=True) if title_el else (
+            link.get_text(strip=True) if link else ""
+        )
+
+        description_el = card.select_one(".wants-card__description-text")
+        description = (
+            description_el.get_text(strip=True) if description_el else ""
+        )
+
+        price_el = card.select_one(".wants-card__right")
+        price = price_el.get_text(strip=True) if price_el else ""
+
+        if not title or not order_id:
+            continue
+
+        url = (
+            href
+            if href.startswith("http")
+            else f"https://kwork.ru{href}"
+        ) if href else None
+
+        orders.append(
+            {
+                "id": order_id,
+                "title": title,
+                "description": description,
+                "price": price,
+                "url": url,
+            }
+        )
+
+    return orders
+
+
+async def fetch_orders_for_category(category_id: str) -> list[dict]:
+    """
+    Получает заказы одной категории простым HTTP-запросом.
     """
 
     url = f"{KWORK_BASE_URL}?fc={category_id}"
 
-    response = await page.goto(
-        url,
-        wait_until="domcontentloaded",
-        timeout=30000,
-    )
-
-    await page.wait_for_timeout(1500)
-
-    # --- Диагностические логи ---
-    # Помогают понять, что реально получил браузер:
-    # заблокирован ли запрос, отдаёт ли Kwork другой HTML,
-    # успевает ли прогрузиться JS-контент со карточками.
-
     try:
-        page_title = await page.title()
-    except Exception as e:
-        page_title = f"<ошибка получения title: {e}>"
+        async with httpx.AsyncClient(
+            headers=_HEADERS,
+            timeout=30.0,
+            follow_redirects=True,
+        ) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            html = response.text
 
-    try:
-        response_status = response.status if response else None
     except Exception as e:
-        response_status = f"<ошибка получения статуса: {e}>"
-
-    try:
-        html_content = await page.content()
-    except Exception as e:
-        html_content = ""
         logger.error(
-            "Категория %s: ошибка получения HTML: %s",
+            "Категория %s: ошибка HTTP-запроса: %s",
             category_id,
             e,
         )
+        return []
 
-    try:
-        cards_count = await page.locator(".wants-card").count()
-    except Exception as e:
-        cards_count = f"<ошибка count(): {e}>"
-
-    has_wants_card_text = "wants-card" in html_content
-
-    logger.info(
-        "Категория %s: title страницы: %r",
-        category_id,
-        page_title,
-    )
-    logger.info(
-        "Категория %s: текущий URL: %s",
-        category_id,
-        page.url,
-    )
-    logger.info(
-        "Категория %s: HTTP статус ответа: %s",
-        category_id,
-        response_status,
-    )
-    logger.info(
-        "Категория %s: длина HTML: %d",
-        category_id,
-        len(html_content),
-    )
-    logger.info(
-        "Категория %s: количество элементов .wants-card (count()): %s",
-        category_id,
-        cards_count,
-    )
-    logger.info(
-        "Категория %s: текст 'wants-card' присутствует в HTML: %s",
-        category_id,
-        has_wants_card_text,
-    )
-    logger.info(
-        "Категория %s: первые 500 символов HTML: %s",
-        category_id,
-        html_content[:500],
-    )
-    # --- Конец диагностических логов ---
-
-    orders = await page.evaluate(_EXTRACT_JS)
+    orders = _parse_orders_from_html(html)
 
     logger.info(
         "Категория %s: найдено карточек: %d",
@@ -167,50 +136,24 @@ async def fetch_orders_for_category(
 
 async def fetch_all_orders() -> list[dict]:
     """
-    Получает все заказы из всех настроенных категорий.
+    Получает все заказы из всех настроенных категорий
+    через обычные HTTP-запросы (без браузера).
     """
 
     all_orders: list[dict] = []
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=[
-                "--ignore-certificate-errors",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-            ],
-        )
-
-        page = await browser.new_page(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
-        )
-
+    for category_id in settings.KWORK_CATEGORY_IDS:
         try:
-            for category_id in settings.KWORK_CATEGORY_IDS:
-                try:
-                    orders = await fetch_orders_for_category(
-                        page,
-                        category_id,
-                    )
+            orders = await fetch_orders_for_category(category_id)
 
-                    all_orders.extend(orders)
+            all_orders.extend(orders)
 
-                except Exception as e:
-                    logger.error(
-                        "Ошибка при обходе категории %s: %s",
-                        category_id,
-                        e,
-                    )
-
-        finally:
-            await browser.close()
+        except Exception as e:
+            logger.error(
+                "Ошибка при обходе категории %s: %s",
+                category_id,
+                e,
+            )
 
     # Убираем дубликаты, если один заказ попался
     # в нескольких категориях.
