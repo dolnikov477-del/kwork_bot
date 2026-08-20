@@ -110,7 +110,11 @@ async def on_generate_reply(callback: CallbackQuery) -> None:
         await callback.message.answer("Не удалось сгенерировать отклик. Попробуйте позже.")
         return
 
-    await callback.message.answer(reply_text)
+    await callback.message.answer(
+        reply_text,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
 
 
 @retry_on_network_error(max_retries=5, delay=3.0)
