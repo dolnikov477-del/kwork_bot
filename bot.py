@@ -132,9 +132,7 @@ async def polling_loop() -> None:
     init_db()
     while True:
         try:
-            new_orders = await fetch_new_orders()
-            for order in new_orders:
-                await notify_new_order(order)
+            await fetch_new_orders(on_new_order=notify_new_order)
         except Exception as e:
             logger.error("Ошибка в polling_loop: %s", e)
 

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from playwright.async_api import async_playwright
 
 from config import settings
-from storage import is_seen, save_order
+from storage import is_seen
 
 logger = logging.getLogger(__name__)
 
@@ -87,15 +87,14 @@ async def fetch_orders_for_category(page, category_id: int) -> list[dict]:
     return await page.evaluate(_EXTRACT_JS)
 
 
-async def fetch_new_orders() -> list[dict]:
+async def fetch_new_orders(on_new_order=None) -> None:
     """
     Получает заказы из настроенных категорий.
 
+    При обнаружении нового заказа сразу вызывает on_new_order(order).
     Просмотренные заказы запоминаются в seen_orders.json,
     поэтому дубликаты не отправляются повторно.
     """
-
-    all_new: list[dict] = []
 
     async with async_playwright() as p:
 
@@ -172,14 +171,7 @@ async def fetch_new_orders() -> list[dict]:
                     continue
 
                 # Новый заказ
-                save_order(order)
-                all_new.append(order)
+                if on_new_order:
+                    await on_new_order(order)
 
         await browser.close()
-
-    logger.info(
-        "Парсинг завершён. Новых заказов: %s",
-        len(all_new),
-    )
-
-    return all_new
