@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import logging
+import re
+from datetime import datetime, timezone
 from playwright.async_api import async_playwright
 
 from config import settings
@@ -13,6 +15,24 @@ from storage import is_seen, save_order
 logger = logging.getLogger(__name__)
 
 KWORK_BASE_URL = "https://kwork.ru/projects"
+
+
+def _parse_replies_count(text: str) -> int:
+    if not text:
+        return 0
+    match = re.search(r"(\d+)", text)
+    return int(match.group(1)) if match else 0
+
+
+def _is_too_old(published_at: str, max_age_hours: int = settings.MAX_AGE_HOURS) -> bool:
+    if not published_at:
+        return False
+    try:
+        dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        return (now - dt).total_seconds() > max_age_hours * 3600
+    except Exception:
+        return False
 
 _EXTRACT_JS = """
 () => {
@@ -31,6 +51,12 @@ _EXTRACT_JS = """
         const price =
             card.querySelector('.wants-card__right')?.innerText?.trim() || '';
 
+        const repliesText =
+            card.querySelector('.wants-card__footer-item')?.innerText?.trim() || '';
+
+        const publishedAt =
+            card.querySelector('time')?.getAttribute('datetime') || '';
+
         return {
             id: idMatch ? idMatch[1] : href,
             title,
@@ -39,6 +65,8 @@ _EXTRACT_JS = """
             url: href
                 ? (href.startsWith('http') ? href : 'https://kwork.ru' + href)
                 : null,
+            repliesText,
+            publishedAt,
         };
     }).filter(c => c.title && c.id);
 }
@@ -123,6 +151,24 @@ async def fetch_new_orders() -> list[dict]:
 
                 # Уже видели этот заказ
                 if is_seen(order_id):
+                    continue
+
+                replies_count = _parse_replies_count(order.get("repliesText", ""))
+                if replies_count > settings.MAX_REPLIES:
+                    logger.info(
+                        "Пропуск заказа %s: откликов %d > %d",
+                        order_id,
+                        replies_count,
+                        settings.MAX_REPLIES,
+                    )
+                    continue
+
+                if _is_too_old(order.get("publishedAt", "")):
+                    logger.info(
+                        "Пропуск заказа %s: заказ старше %d часов",
+                        order_id,
+                        settings.MAX_AGE_HOURS,
+                    )
                     continue
 
                 # Новый заказ

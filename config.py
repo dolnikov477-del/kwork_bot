@@ -32,6 +32,10 @@ class Settings:
     # Интервал проверки
     POLL_INTERVAL: int = int(os.getenv("POLL_INTERVAL", "90"))
 
+    # Фильтр старых/запаленных заказов
+    MAX_REPLIES: int = int(os.getenv("MAX_REPLIES", "3"))
+    MAX_AGE_HOURS: int = int(os.getenv("MAX_AGE_HOURS", "2"))
+
     # База уже просмотренных заказов
     DB_PATH: str = os.getenv("DB_PATH", "seen_orders.db")
 
