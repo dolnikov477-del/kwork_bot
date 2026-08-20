@@ -66,7 +66,7 @@ def _order_keyboard(order_id: str, url: str) -> InlineKeyboardMarkup:
 
 
 def _format_order_message(order: dict) -> str:
-    parts = [f"🆕 <b>{order['title']}</b>"]
+    parts = [f"🆕 {order['title']}"]
     if order.get("price"):
         parts.append(f"💰 Бюджет: {order['price']}")
     description = order.get("description", "")
