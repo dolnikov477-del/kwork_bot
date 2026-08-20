@@ -1,5 +1,10 @@
 {
   "build": {
-    "builder": "DOCKERFILE"
+    "builder": "DOCKERFILE",
+    "buildCommand": "docker build -t kwork-bot ."
+  },
+  "deploy": {
+    "numReplicas": 1,
+    "startCommand": "python main.py"
   }
 }
