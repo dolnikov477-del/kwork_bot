@@ -60,3 +60,9 @@ def get_order(order_id: str) -> dict | None:
             "url": row[3],
             "price": row[4],
         }
+
+
+def has_any_seen() -> bool:
+    with closing(sqlite3.connect(settings.DB_PATH)) as conn:
+        cur = conn.execute("SELECT 1 FROM seen_orders LIMIT 1")
+        return cur.fetchone() is not None

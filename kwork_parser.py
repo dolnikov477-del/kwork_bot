@@ -8,7 +8,7 @@ import logging
 from playwright.async_api import async_playwright
 
 from config import settings
-from storage import is_seen, save_order
+from storage import is_seen, save_order, has_any_seen
 
 logger = logging.getLogger(__name__)
 
@@ -93,28 +93,7 @@ async def fetch_new_orders() -> list[dict]:
             )
         )
 
-        first_run = True
-
-        # Проверяем, есть ли уже хоть один сохранённый заказ.
-        # Если база пустая — считаем это первым запуском.
-        try:
-            test_orders = await fetch_orders_for_category(
-                page,
-                settings.KWORK_CATEGORY_IDS[0]
-            )
-
-            if test_orders:
-                first_run = all(
-                    not is_seen(order["id"])
-                    for order in test_orders
-                    if order.get("id")
-                )
-
-        except Exception as e:
-            logger.exception(
-                "Ошибка проверки первого запуска: %s",
-                e,
-            )
+        first_run = not has_any_seen()
 
         for category_id in settings.KWORK_CATEGORY_IDS:
 
