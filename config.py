@@ -21,9 +21,11 @@ class Settings:
     GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
     # Категории Kwork
-    KWORK_CATEGORY_IDS: list[str] = _split_csv(
-        os.getenv("KWORK_CATEGORY_IDS", "38,39,41,79,113")
-    )
+    KWORK_CATEGORY_IDS: list[int] = [
+        int(cat.strip())
+        for cat in os.getenv("KWORK_CATEGORY_IDS", "38,39,41,79,113").split(",")
+        if cat.strip()
+    ]
 
     # НЕ фильтруем по ключевым словам.
     # Парсим только выбранные категории.

@@ -45,7 +45,7 @@ _EXTRACT_JS = """
 """
 
 
-async def fetch_orders_for_category(page, category_id: str) -> list[dict]:
+async def fetch_orders_for_category(page, category_id: int) -> list[dict]:
     url = f"{KWORK_BASE_URL}?fc={category_id}"
 
     await page.goto(
