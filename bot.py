@@ -110,11 +110,14 @@ async def on_generate_reply(callback: CallbackQuery) -> None:
         await callback.message.answer("Не удалось сгенерировать отклик. Попробуйте позже.")
         return
 
-    await callback.message.answer(
-        reply_text,
-        parse_mode="HTML",
-        disable_web_page_preview=True,
-    )
+    try:
+        await callback.message.answer(
+            reply_text,
+            disable_web_page_preview=True,
+        )
+    except Exception as e:
+        logger.error("Ошибка отправки AI-отклика для заказа %s: %s", order_id, e)
+        await callback.message.answer("Не удалось отправить отклик. Попробуйте позже.")
 
 
 @retry_on_network_error(max_retries=5, delay=3.0)
@@ -124,11 +127,16 @@ async def notify_new_order(order: dict) -> None:
         order["id"],
         order.get("title", ""),
     )
-    await bot.send_message(
-        chat_id=settings.TELEGRAM_CHAT_ID,
-        text=_format_order_message(order),
-        reply_markup=_order_keyboard(order["id"], order["url"]),
-    )
+    try:
+        await bot.send_message(
+            chat_id=settings.TELEGRAM_CHAT_ID,
+            text=_format_order_message(order),
+            reply_markup=_order_keyboard(order["id"], order["url"]),
+            parse_mode=None,
+        )
+    except Exception as e:
+        logger.error("Ошибка отправки заказа %s: %s", order["id"], e)
+        return
     logger.info("Заказ %s отправлен в Telegram", order["id"])
     save_order(order)
 
