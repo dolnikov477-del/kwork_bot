@@ -29,13 +29,17 @@ SYSTEM_PROMPT = """\
 
 
 def generate_reply(title: str, description: str, price: str = "") -> str:
-    print("🤖 Запущен AI-генератор...")
-
-    user_prompt = "Напиши 1 слово 'ПРИВЕТ'"
+    user_prompt = (
+        f"Заголовок заказа: {title}\n"
+        f"Описание: {description}\n"
+        f"Бюджет клиента: {price or 'не указан'}\n\n"
+        "Напиши отклик на этот заказ."
+    )
 
     completion = _client.chat.completions.create(
         model=settings.GROQ_MODEL,
         messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.7,

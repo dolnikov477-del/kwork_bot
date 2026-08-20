@@ -55,25 +55,22 @@ def _order_keyboard(order_id: str, url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🔗 Перейти к заказу", url=url)],
-            [
-                InlineKeyboardButton(
-                    text="✨ Сгенерировать отклик",
-                    callback_data=f"gen:{order_id}",
-                )
-            ],
         ]
     )
 
 
-def _format_order_message(order: dict) -> str:
+def _format_order_message(order: dict, ai_reply: str = "") -> str:
     price_line = f"\n💰 Бюджет: {order['price']}" if order.get("price") else ""
     description = order.get("description", "")
     if len(description) > 500:
         description = description[:500] + "..."
-    return (
+    message = (
         f"🆕 <b>{order['title']}</b>{price_line}\n\n"
         f"{description}"
     )
+    if ai_reply:
+        message += f"\n\n🤖 <b>AI-отклик:</b>\n{ai_reply}"
+    return message
 
 
 @dp.message(CommandStart())
@@ -119,9 +116,18 @@ async def notify_new_order(order: dict) -> None:
         order["id"],
         order.get("title", ""),
     )
+
+    try:
+        ai_reply = await asyncio.to_thread(
+            generate_reply, order["title"], order["description"], order.get("price", "")
+        )
+    except Exception as e:
+        logger.error("Ошибка генерации отклика: %s", e)
+        ai_reply = ""
+
     await bot.send_message(
         chat_id=settings.TELEGRAM_CHAT_ID,
-        text=_format_order_message(order),
+        text=_format_order_message(order, ai_reply=ai_reply),
         reply_markup=_order_keyboard(order["id"], order["url"]),
     )
     logger.info("Заказ %s отправлен в Telegram", order["id"])
