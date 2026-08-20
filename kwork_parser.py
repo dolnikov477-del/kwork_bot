@@ -8,7 +8,7 @@ import logging
 from playwright.async_api import async_playwright
 
 from config import settings
-from storage import is_seen, save_order, clear_seen_orders
+from storage import is_seen, save_order
 
 logger = logging.getLogger(__name__)
 
@@ -63,13 +63,11 @@ async def fetch_new_orders() -> list[dict]:
     """
     Получает заказы из настроенных категорий.
 
-    При каждом запуске список просмотренных заказов очищается,
-    поэтому возвращаются все найденные заказы.
+    Просмотренные заказы запоминаются в seen_orders.json,
+    поэтому дубликаты не отправляются повторно.
     """
 
     all_new: list[dict] = []
-
-    clear_seen_orders()
 
     async with async_playwright() as p:
 
