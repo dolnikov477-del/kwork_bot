@@ -114,7 +114,6 @@ async def on_generate_reply(callback: CallbackQuery) -> None:
 
 @retry_on_network_error(max_retries=5, delay=3.0)
 async def notify_new_order(order: dict) -> None:
-    save_order(order)
     logger.info(
         "Отправка заказа %s в Telegram: title=%s",
         order["id"],
@@ -126,6 +125,7 @@ async def notify_new_order(order: dict) -> None:
         reply_markup=_order_keyboard(order["id"], order["url"]),
     )
     logger.info("Заказ %s отправлен в Telegram", order["id"])
+    save_order(order)
 
 
 async def polling_loop() -> None:
