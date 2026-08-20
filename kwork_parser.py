@@ -95,6 +95,8 @@ async def fetch_new_orders() -> list[dict]:
 
         first_run = not has_any_seen()
 
+        logger.info("Категории для парсинга: %s", settings.KWORK_CATEGORY_IDS)
+
         for category_id in settings.KWORK_CATEGORY_IDS:
 
             try:
