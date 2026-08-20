@@ -146,12 +146,7 @@ async def polling_loop() -> None:
     last_error_sent = False
     while True:
         try:
-            new_orders_count = await fetch_new_orders(on_new_order=notify_new_order)
-            if new_orders_count == 0:
-                await bot.send_message(
-                    chat_id=settings.TELEGRAM_CHAT_ID,
-                    text="Посмотрел биржу, пока что заказов 0",
-                )
+            await fetch_new_orders(on_new_order=notify_new_order)
             last_error_sent = False
         except Exception as e:
             logger.error("Ошибка в polling_loop: %s", e)
