@@ -18,7 +18,7 @@ class Settings:
 
     # Groq
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
-    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-specdec")
 
     # Категории Kwork
     category_ids_str = os.getenv("KWORK_CATEGORY_IDS", "")
@@ -36,8 +36,8 @@ class Settings:
     MAX_REPLIES: int = int(os.getenv("MAX_REPLIES", "6"))
     MAX_AGE_HOURS: int = int(os.getenv("MAX_AGE_HOURS", "2"))
 
-    # База уже просмотренных заказов
-    DB_PATH: str = os.getenv("DB_PATH", "seen_orders.db")
+    # Файл с просмотренными заказами (для Railway Volume используйте /data/seen_orders.json)
+    SEEN_ORDERS_FILE: str = os.getenv("SEEN_ORDERS_FILE", "/data/seen_orders.json")
 
 
 settings = Settings()

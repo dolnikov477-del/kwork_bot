@@ -150,6 +150,7 @@ async def fetch_new_orders(on_new_order=None) -> None:
 
                 # Уже видели этот заказ
                 if is_seen(order_id):
+                    logger.debug("Пропуск заказа %s: уже отправлен", order_id)
                     continue
 
                 replies_count = _parse_replies_count(order.get("repliesText", ""))

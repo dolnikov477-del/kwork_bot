@@ -37,7 +37,7 @@ def generate_reply(title: str, description: str, price: str = "") -> str:
     )
 
     completion = _client.chat.completions.create(
-        model=settings.GROQ_MODEL,
+        model="llama-3.3-70b-specdec",
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
