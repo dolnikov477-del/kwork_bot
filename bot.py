@@ -143,11 +143,24 @@ async def notify_new_order(order: dict) -> None:
 
 async def polling_loop() -> None:
     init_db()
+    last_error_sent = False
     while True:
         try:
-            await fetch_new_orders(on_new_order=notify_new_order)
+            new_orders_count = await fetch_new_orders(on_new_order=notify_new_order)
+            if new_orders_count == 0:
+                await bot.send_message(
+                    chat_id=settings.TELEGRAM_CHAT_ID,
+                    text="Посмотрел биржу, пока что заказов 0",
+                )
+            last_error_sent = False
         except Exception as e:
             logger.error("Ошибка в polling_loop: %s", e)
+            if not last_error_sent:
+                await bot.send_message(
+                    chat_id=settings.TELEGRAM_CHAT_ID,
+                    text="⚠️ Произошла ошибка в логах",
+                )
+                last_error_sent = True
 
         await asyncio.sleep(settings.POLL_INTERVAL)
 
