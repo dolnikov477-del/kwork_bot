@@ -8,7 +8,7 @@ import logging
 from playwright.async_api import async_playwright
 
 from config import settings
-from storage import is_seen, save_order, has_any_seen
+from storage import is_seen, save_order, clear_seen_orders
 
 logger = logging.getLogger(__name__)
 
@@ -63,14 +63,13 @@ async def fetch_new_orders() -> list[dict]:
     """
     Получает заказы из настроенных категорий.
 
-    Первый запуск:
-        существующие заказы только запоминаются.
-
-    Последующие запуски:
-        возвращаются только действительно новые заказы.
+    При каждом запуске список просмотренных заказов очищается,
+    поэтому возвращаются все найденные заказы.
     """
 
     all_new: list[dict] = []
+
+    clear_seen_orders()
 
     async with async_playwright() as p:
 
@@ -92,8 +91,6 @@ async def fetch_new_orders() -> list[dict]:
                 "Chrome/124.0.0.0 Safari/537.36"
             )
         )
-
-        first_run = not has_any_seen()
 
         logger.info("Категории для парсинга: %s", settings.KWORK_CATEGORY_IDS)
 
@@ -128,13 +125,6 @@ async def fetch_new_orders() -> list[dict]:
 
                 # Уже видели этот заказ
                 if is_seen(order_id):
-                    continue
-
-                # Первый запуск:
-                # НЕ отправляем старые заказы,
-                # просто сохраняем их.
-                if first_run:
-                    save_order(order)
                     continue
 
                 # Новый заказ

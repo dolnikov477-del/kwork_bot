@@ -66,3 +66,9 @@ def has_any_seen() -> bool:
     with closing(sqlite3.connect(settings.DB_PATH)) as conn:
         cur = conn.execute("SELECT 1 FROM seen_orders LIMIT 1")
         return cur.fetchone() is not None
+
+
+def clear_seen_orders() -> None:
+    with closing(sqlite3.connect(settings.DB_PATH)) as conn:
+        conn.execute("DELETE FROM seen_orders")
+        conn.commit()
