@@ -67,9 +67,12 @@ def _order_keyboard(order_id: str, url: str) -> InlineKeyboardMarkup:
 
 def _format_order_message(order: dict) -> str:
     price_line = f"\n💰 Бюджет: {order['price']}" if order.get("price") else ""
-    link_line = f"\n📎 Ссылка: {order['url']}" if order.get("url") else ""
+    description = order.get("description", "")
+    if len(description) > 300:
+        description = description[:300] + "..."
+    description_line = f"\n📝 {description}" if description else ""
     return (
-        f"🆕 <b>{order['title']}</b>{price_line}{link_line}"
+        f"🆕 <b>{order['title']}</b>{price_line}{description_line}"
     )
 
 
