@@ -18,7 +18,7 @@ class Settings:
 
     # Groq
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
-    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "mixtral-8x7b-32768")
+    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
     # Категории Kwork
     category_ids_str = os.getenv("KWORK_CATEGORY_IDS", "")

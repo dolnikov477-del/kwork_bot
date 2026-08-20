@@ -37,7 +37,7 @@ def generate_reply(title: str, description: str, price: str = "") -> str:
     )
 
     completion = _client.chat.completions.create(
-        model="mixtral-8x7b-32768",
+        model="openai/gpt-oss-120b",
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
