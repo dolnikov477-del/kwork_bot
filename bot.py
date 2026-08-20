@@ -55,6 +55,12 @@ def _order_keyboard(order_id: str, url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🔗 Перейти к заказу", url=url)],
+            [
+                InlineKeyboardButton(
+                    text="✨ Сгенерировать отклик",
+                    callback_data=f"gen:{order_id}",
+                )
+            ],
         ]
     )
 
