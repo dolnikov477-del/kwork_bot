@@ -40,7 +40,7 @@ def generate_reply(title: str, description: str, price: str = "") -> str:
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.7,
-        max_tokens=800,
+        max_tokens=1200,
     )
 
     reply_text = completion.choices[0].message.content.strip()
