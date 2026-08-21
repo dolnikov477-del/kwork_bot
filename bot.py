@@ -46,7 +46,7 @@ def retry_on_network_error(max_retries: int = 3, delay: float = 2.0):
 
 bot = Bot(
     token=settings.TELEGRAM_BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    default=DefaultBotProperties(parse_mode=None),
 )
 dp = Dispatcher()
 
