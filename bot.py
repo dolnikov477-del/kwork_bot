@@ -117,9 +117,13 @@ async def on_generate_reply(callback: CallbackQuery) -> None:
         await callback.message.answer("Не удалось сгенерировать отклик. Попробуйте позже.")
         return
 
+    if len(reply_text) > 3500:
+        reply_text = reply_text[:3500] + "..."
+
     try:
         await callback.message.answer(
             reply_text,
+            parse_mode=None,
             disable_web_page_preview=True,
         )
     except Exception as e:
