@@ -131,6 +131,8 @@ async def on_generate_reply(callback: CallbackQuery) -> None:
         await callback.message.answer("Не удалось сгенерировать отклик. Попробуйте позже.")
         return
 
+    logger.info("Длина AI-отклика для заказа %s: %d символов", order_id, len(reply_text))
+
     try:
         parts = _split_message(reply_text, max_len=4000)
         for part in parts:
