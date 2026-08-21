@@ -96,14 +96,21 @@ async def on_generate_reply(callback: CallbackQuery) -> None:
 
     await callback.answer("Генерирую отклик...")
 
-    try:
-        reply_text = await asyncio.to_thread(
-            generate_reply, order["title"], order["description"], order.get("price", "")
-        )
-    except Exception as e:
-        logger.error("Ошибка генерации отклика: %s", e)
-        await callback.message.answer(f"Ошибка генерации отклика: {e}")
-        return
+    reply_text = ""
+    for i in range(3):
+        try:
+            reply_text = await asyncio.to_thread(
+                generate_reply, order["title"], order["description"], order.get("price", "")
+            )
+        except Exception as e:
+            logger.error("Ошибка генерации отклика (попытка %d): %s", i + 1, e)
+            await asyncio.sleep(1)
+            continue
+
+        if reply_text:
+            break
+
+        await asyncio.sleep(1)
 
     if not reply_text:
         logger.error("OpenRouter вернул пустой текст отклика для заказа %s", order_id)

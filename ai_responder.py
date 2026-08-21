@@ -40,9 +40,11 @@ def generate_reply(title: str, description: str, price: str = "") -> str:
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.7,
-        max_tokens=400,
+        max_tokens=300,
     )
 
     reply_text = completion.choices[0].message.content.strip()
+    if len(reply_text) > 4000:
+        reply_text = reply_text[:4000] + "..."
     print("Ответ AI:", reply_text)
     return reply_text
