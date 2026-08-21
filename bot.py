@@ -77,6 +77,20 @@ def _format_order_message(order: dict) -> str:
     return "\n\n".join(parts)
 
 
+def _split_message(text: str, max_len: int = 4000) -> list[str]:
+    parts = []
+    while text:
+        if len(text) <= max_len:
+            parts.append(text)
+            break
+        split_at = text.rfind("\n", 0, max_len)
+        if split_at == -1:
+            split_at = max_len
+        parts.append(text[:split_at])
+        text = text[split_at:].lstrip("\n")
+    return parts
+
+
 @dp.message(CommandStart())
 async def on_start(message: Message) -> None:
     await message.answer(
@@ -117,15 +131,14 @@ async def on_generate_reply(callback: CallbackQuery) -> None:
         await callback.message.answer("Не удалось сгенерировать отклик. Попробуйте позже.")
         return
 
-    if len(reply_text) > 3500:
-        reply_text = reply_text[:3500] + "..."
-
     try:
-        await callback.message.answer(
-            reply_text,
-            parse_mode=None,
-            disable_web_page_preview=True,
-        )
+        parts = _split_message(reply_text, max_len=4000)
+        for part in parts:
+            await callback.message.answer(
+                part,
+                parse_mode=None,
+                disable_web_page_preview=True,
+            )
     except Exception as e:
         logger.error("Ошибка отправки AI-отклика для заказа %s: %s", order_id, e)
         await callback.message.answer("Не удалось отправить отклик. Попробуйте позже.")
