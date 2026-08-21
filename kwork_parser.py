@@ -80,7 +80,7 @@ async def fetch_orders_for_category(page, category_id: int) -> list[dict]:
     await page.goto(
         url,
         wait_until="domcontentloaded",
-        timeout=30000,
+        timeout=60000,
     )
 
     await asyncio.sleep(3)
@@ -134,6 +134,13 @@ async def fetch_new_orders(on_new_order=None) -> None:
                     len(orders),
                 )
 
+            except TimeoutError:
+                logger.warning(
+                    "Таймаут при обходе категории %s, жду 10 секунд и продолжаю",
+                    category_id,
+                )
+                await asyncio.sleep(10)
+                continue
             except Exception as e:
                 logger.exception(
                     "Ошибка при обходе категории %s: %s",
@@ -176,6 +183,6 @@ async def fetch_new_orders(on_new_order=None) -> None:
                 if on_new_order:
                     await on_new_order(order)
 
-            await asyncio.sleep(2)
+            await asyncio.sleep(5)
 
         await browser.close()
