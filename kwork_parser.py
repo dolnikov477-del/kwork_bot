@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timezone
@@ -82,7 +83,7 @@ async def fetch_orders_for_category(page, category_id: int) -> list[dict]:
         timeout=30000,
     )
 
-    await page.wait_for_timeout(1500)
+    await asyncio.sleep(3)
 
     return await page.evaluate(_EXTRACT_JS)
 
@@ -174,5 +175,7 @@ async def fetch_new_orders(on_new_order=None) -> None:
                 # Новый заказ
                 if on_new_order:
                     await on_new_order(order)
+
+            await asyncio.sleep(2)
 
         await browser.close()

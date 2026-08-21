@@ -30,7 +30,7 @@ class Settings:
     KEYWORDS: list[str] = []
 
     # Интервал проверки
-    POLL_INTERVAL: int = int(os.getenv("POLL_INTERVAL", "90"))
+    POLL_INTERVAL: int = int(os.getenv("POLL_INTERVAL", "60"))
 
     # Фильтр старых/запаленных заказов
     MAX_REPLIES: int = int(os.getenv("MAX_REPLIES", "6"))
