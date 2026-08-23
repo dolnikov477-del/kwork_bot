@@ -114,7 +114,7 @@ async def fetch_new_orders(on_new_order=None) -> None:
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
+                "Chrome/125.0.0.0 Safari/537.36"
             )
         )
 
@@ -135,11 +135,11 @@ async def fetch_new_orders(on_new_order=None) -> None:
                 )
 
             except TimeoutError:
-                logger.warning(
-                    "Таймаут при обходе категории %s, жду 30 секунд и продолжаю",
+                logger.error(
+                    "Таймаут на категории %s, пропускаем",
                     category_id,
                 )
-                await asyncio.sleep(30)
+                await asyncio.sleep(15)
                 continue
             except Exception as e:
                 logger.exception(
