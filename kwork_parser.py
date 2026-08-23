@@ -149,6 +149,8 @@ async def fetch_new_orders(on_new_order=None) -> None:
                 )
                 continue
 
+            sent_in_category = 0
+
             for order in orders:
 
                 order_id = order.get("id")
@@ -182,6 +184,14 @@ async def fetch_new_orders(on_new_order=None) -> None:
                 # Новый заказ
                 if on_new_order:
                     await on_new_order(order)
+                    sent_in_category += 1
+                    if sent_in_category >= settings.MAX_ORDERS_PER_CATEGORY:
+                        logger.info(
+                            "Достигнут лимит заказов для категории %s: %d",
+                            category_id,
+                            settings.MAX_ORDERS_PER_CATEGORY,
+                        )
+                        break
 
             await asyncio.sleep(10)
 
