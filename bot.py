@@ -5,8 +5,7 @@ from functools import wraps
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramNetworkError
-from aiogram.filters import CommandStart
+from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter, TelegramServerError
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -20,6 +19,16 @@ from kwork_parser import fetch_new_orders
 from storage import get_order, init_db, save_order
 
 logger = logging.getLogger(__name__)
+
+async def safe_send_message(bot: Bot, chat_id: int | str, text: str, **kwargs):
+    try:
+        await bot.send_message(chat_id, text, **kwargs)
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(e.retry_after + 1)
+        await bot.send_message(chat_id, text, **kwargs)
+    except TelegramServerError:
+        await asyncio.sleep(10)
+        await bot.send_message(chat_id, text, **kwargs)
 
 
 def retry_on_network_error(max_retries: int = 3, delay: float = 2.0):

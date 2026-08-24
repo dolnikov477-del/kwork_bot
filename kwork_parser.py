@@ -184,6 +184,7 @@ async def fetch_new_orders(on_new_order=None) -> None:
                 # Новый заказ
                 if on_new_order:
                     await on_new_order(order)
+                    await asyncio.sleep(3)
                     sent_in_category += 1
                     if sent_in_category >= settings.MAX_ORDERS_PER_CATEGORY:
                         logger.info(
