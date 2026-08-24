@@ -176,12 +176,8 @@ async def notify_new_order(order: dict) -> None:
             reply_markup=_order_keyboard(order["id"], order["url"]),
             parse_mode=None,
         )
-    except Exception as e:
-        logger.error("Ошибка отправки заказа %s: %s", order["id"], e)
-        # Re-raise to trigger retry mechanism
-        raise
-    logger.info("Заказ %s отправлен в Telegram", order["id"])
-    save_order(order)
+    finally:
+        save_order(order)
 
 
 async def polling_loop() -> None:
