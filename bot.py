@@ -213,6 +213,9 @@ async def polling_loop() -> None:
 
 @retry_on_network_error(max_retries=5, delay=3.0)
 async def run() -> None:
+    # Start background cleanup task
+    from storage import start_cleanup_task
+    start_cleanup_task()
     await asyncio.gather(
         dp.start_polling(bot),
         polling_loop(),
