@@ -37,36 +37,38 @@ def generate_reply(title: str, description: str, price: str = "") -> str:
         "Напиши отклик на этот заказ."
     )
 
+    models = [settings.GROQ_MODEL, "qwen/qwen3.6-27b"]
     max_retries = 3
     base_delay = 2.0
 
-    for i in range(max_retries):
-        try:
-            logger.info("Вызываю Groq... (попытка %d/%d)", i + 1, max_retries)
-            completion = _client.chat.completions.create(
-                model=settings.GROQ_MODEL,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.7,
-                max_tokens=1200,
-                timeout=30.0,
-            )
+    for model in models:
+        for i in range(max_retries):
+            try:
+                logger.info("Вызываю Groq с моделью '%s'... (попытка %d/%d)", model, i + 1, max_retries)
+                completion = _client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=0.7,
+                    max_tokens=1200,
+                    timeout=30.0,
+                )
 
-            reply_text = completion.choices[0].message.content.strip()
-            logger.info("Получен ответ от AI для заказа '%s': %d символов", title, len(reply_text))
+                reply_text = completion.choices[0].message.content.strip()
+                logger.info("Получен ответ от AI для заказа '%s': %d символов", title, len(reply_text))
 
-            if reply_text:
-                return reply_text
-            else:
-                logger.warning("Получен пустой ответ от AI (попытка %d/%d)", i + 1, max_retries)
+                if reply_text:
+                    return reply_text
+                else:
+                    logger.warning("Получен пустой ответ от AI (попытка %d/%d)", i + 1, max_retries)
 
-        except Exception as e:
-            logger.error("Groq error (попытка %d/%d): %s", i + 1, max_retries, e)
-            if i < max_retries - 1:
-                logger.info("Ожидание %.1f секунд перед повторной попыткой", base_delay)
-                time.sleep(base_delay)
+            except Exception as e:
+                logger.error("Groq error с моделью '%s' (попытка %d/%d): %s", model, i + 1, max_retries, e)
+                if i < max_retries - 1:
+                    logger.info("Ожидание %.1f секунд перед повторной попыткой", base_delay)
+                    time.sleep(base_delay)
 
-    logger.error("Не удалось получить ответ от AI после %d попыток", max_retries)
+    logger.error("Не удалось получить ответ от AI после %d попыток по всем моделям", max_retries)
     return ""
