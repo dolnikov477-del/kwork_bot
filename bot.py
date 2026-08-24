@@ -6,6 +6,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter, TelegramServerError
+from aiogram.filters import CommandStart
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -120,23 +121,29 @@ async def on_generate_reply(callback: CallbackQuery) -> None:
     await callback.answer("Генерирую отклик...")
 
     reply_text = ""
-    for i in range(3):
+    max_retries = 3
+    base_delay = 1.0
+    
+    for i in range(max_retries):
         try:
             reply_text = await asyncio.to_thread(
                 generate_reply, order["title"], order["description"], order.get("price", "")
             )
         except Exception as e:
-            logger.error("Ошибка генерации отклика (попытка %d): %s", i + 1, e)
-            await asyncio.sleep(1)
+            logger.error("Ошибка генерации отклика (попытка %d/%d): %s", i + 1, max_retries, e)
+            if i < max_retries - 1:  # Don't sleep on last attempt
+                await asyncio.sleep(base_delay * (2 ** i))  # Exponential backoff
             continue
 
-        if reply_text:
+        if reply_text and reply_text.strip():
             break
+        else:
+            logger.warning("Получен пустой отклик от AI (попытка %d/%d)", i + 1, max_retries)
+            if i < max_retries - 1:
+                await asyncio.sleep(base_delay * (2 ** i))
 
-        await asyncio.sleep(1)
-
-    if not reply_text:
-        logger.error("OpenRouter вернул пустой текст отклика для заказа %s", order_id)
+    if not reply_text or not reply_text.strip():
+        logger.error("Не удалось сгенерировать валидный отклик для заказа %s после %d попыток", order_id, max_retries)
         await callback.message.answer("Не удалось сгенерировать отклик. Попробуйте позже.")
         return
 
@@ -171,7 +178,8 @@ async def notify_new_order(order: dict) -> None:
         )
     except Exception as e:
         logger.error("Ошибка отправки заказа %s: %s", order["id"], e)
-        return
+        # Re-raise to trigger retry mechanism
+        raise
     logger.info("Заказ %s отправлен в Telegram", order["id"])
     save_order(order)
 
@@ -179,18 +187,26 @@ async def notify_new_order(order: dict) -> None:
 async def polling_loop() -> None:
     init_db()
     last_error_sent = False
+    last_error_time = 0
+    ERROR_COOLDOWN = 300  # 5 minutes between error notifications
+    
     while True:
         try:
             await fetch_new_orders(on_new_order=notify_new_order)
             last_error_sent = False
         except Exception as e:
             logger.error("Ошибка в polling_loop: %s", e)
-            if not last_error_sent:
-                await bot.send_message(
-                    chat_id=settings.TELEGRAM_CHAT_ID,
-                    text="⚠️ Произошла ошибка в логах",
-                )
-                last_error_sent = True
+            current_time = asyncio.get_event_loop().time()
+            if not last_error_sent or (current_time - last_error_time) > ERROR_COOLDOWN:
+                try:
+                    await bot.send_message(
+                        chat_id=settings.TELEGRAM_CHAT_ID,
+                        text="⚠️ Произошла ошибка в логах",
+                    )
+                    last_error_sent = True
+                    last_error_time = current_time
+                except Exception as telegram_error:
+                    logger.error("Не удалось отправить уведомление об ошибке: %s", telegram_error)
 
         await asyncio.sleep(settings.POLL_INTERVAL)
 

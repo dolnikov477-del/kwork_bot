@@ -36,6 +36,9 @@ class Settings:
     MAX_REPLIES: int = int(os.getenv("MAX_REPLIES", "6"))
     MAX_AGE_HOURS: int = int(os.getenv("MAX_AGE_HOURS", "2"))
 
+    # Таймаут загрузки страницы в парсере (миллисекунды)
+    PAGE_LOAD_TIMEOUT: int = int(os.getenv("PAGE_LOAD_TIMEOUT", "30000"))
+
     # Файл с просмотренными заказами (для Railway Volume используйте /data/seen_orders.json)
     SEEN_ORDERS_FILE: str = os.getenv("SEEN_ORDERS_FILE", "/data/seen_orders.json")
 

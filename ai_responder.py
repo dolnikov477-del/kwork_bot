@@ -1,6 +1,11 @@
 from groq import Groq
+from groq import APIError, APIConnectionError, RateLimitError, InternalServerError
 
 from config import settings
+import logging
+import random
+
+logger = logging.getLogger(__name__)
 
 _client = Groq(api_key=settings.GROQ_API_KEY)
 
@@ -33,16 +38,61 @@ def generate_reply(title: str, description: str, price: str = "") -> str:
         "Напиши отклик на этот заказ."
     )
 
-    completion = _client.chat.completions.create(
-        model="openai/gpt-oss-120b",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.7,
-        max_tokens=1200,
-    )
+    max_retries = 3
+    base_delay = 1.0
+    
+    for i in range(max_retries):
+        try:
+            completion = _client.chat.completions.create(
+                model=settings.GROQ_MODEL,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.7,
+                max_tokens=1200,
+                timeout=30.0,  # 30 second timeout
+            )
 
-    reply_text = completion.choices[0].message.content.strip()
-    print("Ответ AI:", reply_text)
-    return reply_text
+            reply_text = completion.choices[0].message.content.strip()
+            logger.debug("Получен ответ от AI для заказа '%s': %d символов", title, len(reply_text))
+            
+            if reply_text:
+                return reply_text
+            else:
+                logger.warning("Получен пустой ответ от AI (попытка %d/%d)", i + 1, max_retries)
+                
+        except RateLimitError as e:
+            logger.warning("Превышен лимит запросов к Groq API (попытка %d/%d): %s", i + 1, max_retries, e)
+            if i < max_retries - 1:
+                delay = base_delay * (2 ** i) + random.uniform(0, 1)
+                logger.info("Ожидание %.1f секунд перед повторной попыткой", delay)
+                import time
+                time.sleep(delay)
+        except (APIConnectionError, InternalServerError) as e:
+            logger.error("Ошибка соединения с Groq API (попытка %d/%d): %s", i + 1, max_retries, e)
+            if i < max_retries - 1:
+                delay = base_delay * (2 ** i) + random.uniform(0, 1)
+                logger.info("Ожидание %.1f секунд перед повторной попыткой", delay)
+                import time
+                time.sleep(delay)
+        except APIError as e:
+            logger.error("Ошибка Groq API (попытка %d/%d): %s", i + 1, max_retries, e)
+            # Don't retry on client errors (4xx)
+            if i < max_retries - 1 and e.status_code >= 500:
+                delay = base_delay * (2 ** i) + random.uniform(0, 1)
+                logger.info("Ожидание %.1f секунд перед повторной попыткой", delay)
+                import time
+                time.sleep(delay)
+            else:
+                break
+        except Exception as e:
+            logger.exception("Неожиданная ошибка при вызове Groq API (попытка %d/%d): %s", i + 1, max_retries, e)
+            if i < max_retries - 1:
+                delay = base_delay * (2 ** i) + random.uniform(0, 1)
+                logger.info("Ожидание %.1f секунд перед повторной попыткой", delay)
+                import time
+                time.sleep(delay)
+
+    logger.error("Не удалось получить ответ от AI после %d попыток", max_retries)
+    return ""
