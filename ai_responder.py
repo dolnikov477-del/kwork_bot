@@ -4,6 +4,7 @@ from groq import APIError, APIConnectionError, RateLimitError, InternalServerErr
 from config import settings
 import logging
 import random
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +16,7 @@ SYSTEM_PROMPT = """\
 
 Структура отклика:
 1. Приветствие: «Добрый день!» или «Здравствуйте!» (чередовать).
-2. Представление: «Меня зовут Артём, представляю агентство Файнд».
+2. Представление: «Меня зовёт Артём, представляю агентство Файнд».
 3. Зацепка: «Мы заинтересовались вашим заказом и уверены, что сможем качественно его реализовать».
 4. Крючок (скидка): Обязательно добавь фразу: «Как уважаемым клиентам, мы готовы предложить вам скидку 10% на этот заказ».
 5. Опыт: «У нас есть опыт в [тематика заказа], и мы знаем, как сделать это быстро и без лишних проблем».
@@ -67,14 +68,12 @@ def generate_reply(title: str, description: str, price: str = "") -> str:
             if i < max_retries - 1:
                 delay = base_delay * (2 ** i) + random.uniform(0, 1)
                 logger.info("Ожидание %.1f секунд перед повторной попыткой", delay)
-                import time
                 time.sleep(delay)
         except (APIConnectionError, InternalServerError) as e:
             logger.error("Ошибка соединения с Groq API (попытка %d/%d): %s", i + 1, max_retries, e)
             if i < max_retries - 1:
                 delay = base_delay * (2 ** i) + random.uniform(0, 1)
                 logger.info("Ожидание %.1f секунд перед повторной попыткой", delay)
-                import time
                 time.sleep(delay)
         except APIError as e:
             logger.error("Ошибка Groq API (попытка %d/%d): %s", i + 1, max_retries, e)
@@ -82,7 +81,6 @@ def generate_reply(title: str, description: str, price: str = "") -> str:
             if i < max_retries - 1 and e.status_code >= 500:
                 delay = base_delay * (2 ** i) + random.uniform(0, 1)
                 logger.info("Ожидание %.1f секунд перед повторной попыткой", delay)
-                import time
                 time.sleep(delay)
             else:
                 break
@@ -91,7 +89,6 @@ def generate_reply(title: str, description: str, price: str = "") -> str:
             if i < max_retries - 1:
                 delay = base_delay * (2 ** i) + random.uniform(0, 1)
                 logger.info("Ожидание %.1f секунд перед повторной попыткой", delay)
-                import time
                 time.sleep(delay)
 
     logger.error("Не удалось получить ответ от AI после %d попыток", max_retries)

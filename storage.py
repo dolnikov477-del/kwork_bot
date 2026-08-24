@@ -65,6 +65,14 @@ def init_db() -> None:
     else:
         _orders = {}
         logger.info("Файл %s не найден, начинаем с пустого списка", SEEN_ORDERS_FILE)
+        # Ensure the directory exists for future writes
+        dir_name = os.path.dirname(SEEN_ORDERS_FILE)
+        if dir_name and not os.path.exists(dir_name):
+            try:
+                os.makedirs(dir_name, exist_ok=True)
+                logger.info("Создана директория для хранения заказов: %s", dir_name)
+            except OSError as e:
+                logger.error("Не удалось создать директорию %s: %s", dir_name, e)
 
 
 def is_seen(order_id: str) -> bool:
@@ -88,12 +96,15 @@ def save_order(order: dict) -> None:
     stored["seen_at"] = datetime.now(timezone.utc).isoformat()
     _orders[order_id] = stored
     try:
-        os.makedirs(os.path.dirname(SEEN_ORDERS_FILE) or ".", exist_ok=True)
+        dir_name = os.path.dirname(SEEN_ORDERS_FILE)
+        if dir_name and not os.path.exists(dir_name):
+            os.makedirs(dir_name, exist_ok=True)
+            logger.info("Создана директория для хранения заказов: %s", dir_name)
         tmp_path = SEEN_ORDERS_FILE + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump({"orders": list(_orders.values())}, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, SEEN_ORDERS_FILE)
-        logger.debug("Сохранён заказ %s в %s", order_id, SEEN_ORDERS_FILE)
+        logger.info("Сохранён заказ %s в %s", order_id, SEEN_ORDERS_FILE)
     except OSError as e:
         logger.error("Не удалось сохранить заказ %s в %s: %s", order_id, SEEN_ORDERS_FILE, e)
 
