@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)
 
 SEEN_ORDERS_FILE = settings.SEEN_ORDERS_FILE
 SEEN_ORDER_TTL_HOURS = settings.SEEN_ORDER_TTL_HOURS
+MAX_SEEN_ORDERS = settings.MAX_SEEN_ORDERS
+SEEN_ORDER_MAX_AGE_DAYS = settings.SEEN_ORDER_MAX_AGE_DAYS
 
 _orders: dict[str, dict] = {}
 _cleanup_lock = asyncio.Lock()
@@ -32,6 +34,29 @@ def _cleanup_expired() -> None:
         del _orders[order_id]
     if expired:
         logger.info("Удалено просмотренных заказов по TTL: %d", len(expired))
+
+
+def _cleanup_if_needed() -> None:
+    global _orders
+    if len(_orders) <= MAX_SEEN_ORDERS:
+        return
+    now = datetime.now(timezone.utc)
+    cutoff = now.timestamp() - (SEEN_ORDER_MAX_AGE_DAYS * 24 * 3600)
+    to_remove = []
+    for order_id, order in _orders.items():
+        seen_at = order.get("seen_at")
+        if not seen_at:
+            continue
+        try:
+            ts = datetime.fromisoformat(seen_at).timestamp()
+        except Exception:
+            continue
+        if ts < cutoff:
+            to_remove.append(order_id)
+    for order_id in to_remove:
+        del _orders[order_id]
+    if to_remove:
+        logger.info("Удалено старых заказов при превышении лимита %d: %d", MAX_SEEN_ORDERS, len(to_remove))
 
 
 async def _periodic_cleanup() -> None:
@@ -57,6 +82,7 @@ def init_db() -> None:
                     if order.get("id")
                 }
             _cleanup_expired()
+            _cleanup_if_needed()
             _last_cleanup = datetime.now(timezone.utc)
             logger.info("Загружено просмотренных заказов: %d", len(_orders))
         except (json.JSONDecodeError, OSError) as e:
@@ -105,6 +131,8 @@ def save_order(order: dict) -> None:
             json.dump({"orders": list(_orders.values())}, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, SEEN_ORDERS_FILE)
         logger.info("Сохранён заказ %s в %s", order_id, SEEN_ORDERS_FILE)
+        logger.info("Сохранено заказов: %d", len(_orders))
+        _cleanup_if_needed()
     except OSError as e:
         logger.error("Не удалось сохранить заказ %s в %s: %s", order_id, SEEN_ORDERS_FILE, e)
 
