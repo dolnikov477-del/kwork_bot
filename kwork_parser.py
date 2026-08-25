@@ -88,31 +88,24 @@ _EXTRACT_JS = """
 }
 """
 
-async def fetch_orders_for_category(page, category_id: int) -> list[dict]:
+async def fetch_orders_for_category(page, category_id: str) -> list[dict]:
+    """Переходит на страницу категории в уже открытой вкладке и возвращает заказы."""
     url = f"{KWORK_BASE_URL}?fc={category_id}"
+    await page.goto(url, wait_until="networkidle", timeout=30000)
+    await page.wait_for_timeout(1500)
+    orders = await page.evaluate(_EXTRACT_JS)
 
-    try:
-        await page.goto(
-            url,
-            wait_until="domcontentloaded",
-            timeout=settings.PAGE_LOAD_TIMEOUT,
+    if not orders:
+        title = await page.title()
+        body_snippet = await page.evaluate("() => document.body.innerText.slice(0, 300)")
+        card_count_raw = await page.evaluate("() => document.querySelectorAll('.want-card').length")
+        print(
+            f"[parser][debug] fc={category_id} | title='{title}' | "
+            f".want-card найдено сырых: {card_count_raw} | "
+            f"начало текста страницы: {body_snippet!r}"
         )
-    except PlaywrightTimeoutError:
-        logger.warning("Таймаут загрузки страницы для категории %s", category_id)
-        # Try to get whatever content we can
-        pass
-    except Exception as e:
-        logger.error("Ошибка при переходе на страницу категории %s: %s", category_id, e)
-        return []
 
-    # Wait for dynamic content with random delay to avoid detection
-    await asyncio.sleep(2 + random.uniform(0, 2))
-
-    try:
-        return await page.evaluate(_EXTRACT_JS)
-    except Exception as e:
-        logger.error("Ошибка при извлечении данных со страницы: %s", e)
-        return []
+    return orders
 
 
 async def fetch_new_orders(on_new_order=None) -> None:
