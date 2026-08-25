@@ -182,27 +182,16 @@ async def notify_new_order(order: dict) -> None:
 
 async def polling_loop() -> None:
     init_db()
-    last_error_sent = False
-    last_error_time = 0
-    ERROR_COOLDOWN = 300  # 5 minutes between error notifications
-    
     while True:
         try:
-            await fetch_new_orders(on_new_order=notify_new_order)
-            last_error_sent = False
-        except Exception as e:
-            logger.error("Ошибка в polling_loop: %s", e)
-            current_time = asyncio.get_event_loop().time()
-            if not last_error_sent or (current_time - last_error_time) > ERROR_COOLDOWN:
+            new_orders = await fetch_new_orders()
+            for order in new_orders:
                 try:
-                    await bot.send_message(
-                        chat_id=settings.TELEGRAM_CHAT_ID,
-                        text="⚠️ Произошла ошибка в логах",
-                    )
-                    last_error_sent = True
-                    last_error_time = current_time
-                except Exception as telegram_error:
-                    logger.error("Не удалось отправить уведомление об ошибке: %s", telegram_error)
+                    await notify_new_order(order)
+                except Exception as e:
+                    print(f"[polling_loop] Ошибка при отправке заказа {order.get('id')}: {e}")
+        except Exception as e:
+            print(f"[polling_loop] Ошибка: {e}")
 
         await asyncio.sleep(settings.POLL_INTERVAL)
 
