@@ -49,7 +49,7 @@ class Settings:
     MAX_ORDERS_PER_CATEGORY: int = int(os.getenv("MAX_ORDERS_PER_CATEGORY", "3"))
 
     # Ограничения для файла просмотренных заказов
-    MAX_SEEN_ORDERS: int = int(os.getenv("MAX_SEEN_ORDERS", "500"))
+    MAX_SEEN_ORDERS: int = int(os.getenv("MAX_SEEN_ORDERS", "30"))
     SEEN_ORDER_MAX_AGE_DAYS: int = int(os.getenv("SEEN_ORDER_MAX_AGE_DAYS", "7"))
 
 

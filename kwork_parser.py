@@ -108,14 +108,11 @@ async def fetch_orders_for_category(page, category_id: str) -> list[dict]:
     return orders
 
 
-async def fetch_new_orders(on_new_order=None) -> None:
+async def fetch_new_orders() -> list[dict]:
     """
-    Получает заказы из настроенных категорий.
-
-    При обнаружении нового заказа сразу вызывает on_new_order(order).
-    Просмотренные заказы запоминаются в seen_orders.json,
-    поэтому дубликаты не отправляются повторно.
+    Получает заказы из настроенных категорий и возвращает список новых заказов.
     """
+    new_orders: list[dict] = []
 
     async with async_playwright() as p:
         browser = None
@@ -131,7 +128,6 @@ async def fetch_new_orders(on_new_order=None) -> None:
                 ],
             )
 
-            # Use random user agent
             user_agent = random.choice(USER_AGENTS)
             page = await browser.new_page(user_agent=user_agent)
 
@@ -139,10 +135,7 @@ async def fetch_new_orders(on_new_order=None) -> None:
 
             for category_id in settings.KWORK_CATEGORY_IDS:
                 try:
-                    orders = await fetch_orders_for_category(
-                        page,
-                        category_id,
-                    )
+                    orders = await fetch_orders_for_category(page, category_id)
 
                     logger.info(
                         "Категория %s: найдено заказов: %s",
@@ -156,7 +149,7 @@ async def fetch_new_orders(on_new_order=None) -> None:
                         category_id,
                         e,
                     )
-                    await asyncio.sleep(5)  # Brief pause before next category
+                    await asyncio.sleep(5)
                     continue
 
                 sent_in_category = 0
@@ -167,7 +160,6 @@ async def fetch_new_orders(on_new_order=None) -> None:
                     if not order_id:
                         continue
 
-                    # Уже видели этот заказ
                     if is_seen(order_id):
                         logger.debug("Пропуск заказа %s: уже отправлен", order_id)
                         continue
@@ -190,24 +182,16 @@ async def fetch_new_orders(on_new_order=None) -> None:
                         )
                         continue
 
-                    # Новый заказ
-                    if on_new_order:
-                        try:
-                            await on_new_order(order)
-                            await asyncio.sleep(2 + random.uniform(0, 2))  # Randomized delay
-                            sent_in_category += 1
-                            if sent_in_category >= settings.MAX_ORDERS_PER_CATEGORY:
-                                logger.info(
-                                    "Достигнут лимит заказов для категории %s: %d",
-                                    category_id,
-                                    settings.MAX_ORDERS_PER_CATEGORY,
-                                )
-                                break
-                        except Exception as e:
-                            logger.error("Ошибка при обработке заказа %s: %s", order_id, e)
-                            # Continue with next order
+                    new_orders.append(order)
+                    sent_in_category += 1
+                    if sent_in_category >= settings.MAX_ORDERS_PER_CATEGORY:
+                        logger.info(
+                            "Достигнут лимит заказов для категории %s: %d",
+                            category_id,
+                            settings.MAX_ORDERS_PER_CATEGORY,
+                        )
+                        break
 
-                # Delay between categories with jitter
                 await asyncio.sleep(8 + random.uniform(0, 4))
 
         except Exception as e:
@@ -219,3 +203,5 @@ async def fetch_new_orders(on_new_order=None) -> None:
                     await browser.close()
                 except Exception as e:
                     logger.error("Ошибка при закрытии браузера: %s", e)
+
+    return new_orders
