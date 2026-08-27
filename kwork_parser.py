@@ -116,18 +116,34 @@ async def fetch_new_orders() -> list[dict]:
 
     async with async_playwright() as p:
         browser = None
-        try:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=[
-                    "--ignore-certificate-errors",
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                ],
-            )
+        max_launch_attempts = 3
+        launch_delay = 10.0
 
+        for attempt in range(1, max_launch_attempts + 1):
+            try:
+                browser = await p.chromium.launch(
+                    headless=True,
+                    channel="chromium",
+                    args=[
+                        "--disable-dev-shm-usage",
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-gpu",
+                    ],
+                )
+                break
+            except Exception as e:
+                logger.error("Не удалось запустить браузер (попытка %d/%d): %s", attempt, max_launch_attempts, e)
+                if attempt < max_launch_attempts:
+                    await asyncio.sleep(launch_delay)
+                else:
+                    logger.error("Не удалось запустить браузер после %d попыток", max_launch_attempts)
+                    return new_orders
+
+        if not browser:
+            return new_orders
+
+        try:
             user_agent = random.choice(USER_AGENTS)
             page = await browser.new_page(user_agent=user_agent)
 
@@ -196,7 +212,6 @@ async def fetch_new_orders() -> list[dict]:
 
         except Exception as e:
             logger.exception("Критическая ошибка в парсере: %s", e)
-            raise
         finally:
             if browser:
                 try:
