@@ -119,28 +119,40 @@ async def fetch_new_orders() -> list[dict]:
         max_launch_attempts = 3
         launch_delay = 10.0
 
-        for attempt in range(1, max_launch_attempts + 1):
-            try:
-                browser = await p.chromium.launch(
-                    headless=True,
-                    channel="chromium",
-                    args=[
-                        "--disable-dev-shm-usage",
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-gpu",
-                    ],
-                )
-                break
-            except Exception as e:
-                logger.error("Не удалось запустить браузер (попытка %d/%d): %s", attempt, max_launch_attempts, e)
-                if attempt < max_launch_attempts:
-                    await asyncio.sleep(launch_delay)
-                else:
-                    logger.error("Не удалось запустить браузер после %d попыток", max_launch_attempts)
-                    return new_orders
+        async def ensure_browser() -> bool:
+            nonlocal browser
+            if browser is None or not browser.is_connected():
+                logger.warning("Браузер отключен или не запущен, пытаюсь перезапустить...")
+                try:
+                    if browser:
+                        await browser.close()
+                except Exception:
+                    pass
+                browser = None
+                for attempt in range(1, max_launch_attempts + 1):
+                    try:
+                        browser = await p.chromium.launch(
+                            headless=True,
+                            channel="chromium",
+                            args=[
+                                "--disable-dev-shm-usage",
+                                "--no-sandbox",
+                                "--disable-setuid-sandbox",
+                                "--disable-gpu",
+                                "--single-process",
+                            ],
+                        )
+                        logger.info("Браузер успешно запущен (попытка %d)", attempt)
+                        return True
+                    except Exception as e:
+                        logger.error("Не удалось запустить браузер (попытка %d/%d): %s", attempt, max_launch_attempts, e)
+                        if attempt < max_launch_attempts:
+                            await asyncio.sleep(launch_delay)
+                logger.error("Не удалось запустить браузер после %d попыток", max_launch_attempts)
+                return False
+            return True
 
-        if not browser:
+        if not await ensure_browser():
             return new_orders
 
         try:
@@ -150,6 +162,9 @@ async def fetch_new_orders() -> list[dict]:
             logger.info("Категории для парсинга: %s", settings.KWORK_CATEGORY_IDS)
 
             for category_id in settings.KWORK_CATEGORY_IDS:
+                if not await ensure_browser():
+                    break
+
                 try:
                     orders = await fetch_orders_for_category(page, category_id)
 
