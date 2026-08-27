@@ -133,7 +133,6 @@ async def fetch_new_orders() -> list[dict]:
                     try:
                         browser = await p.chromium.launch(
                             headless=True,
-                            channel="chromium",
                             args=[
                                 "--disable-dev-shm-usage",
                                 "--no-sandbox",
