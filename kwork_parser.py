@@ -91,14 +91,19 @@ _EXTRACT_JS = """
 async def fetch_orders_for_category(page, category_id: str) -> list[dict]:
     """Переходит на страницу категории в уже открытой вкладке и возвращает заказы."""
     url = f"{KWORK_BASE_URL}?fc={category_id}"
+    logger.info("[parser] Перехожу на URL: %s", url)
     await page.goto(url, wait_until="networkidle", timeout=30000)
     await page.wait_for_timeout(1500)
+    
+    logger.info("[parser] Ищу карточки заказов на странице категории %s...", category_id)
+    card_count_raw = await page.evaluate("() => document.querySelectorAll('.want-card').length")
+    logger.info("[parser] Категория %s: найдено сырых карточек .want-card: %d", category_id, card_count_raw)
+    
     orders = await page.evaluate(_EXTRACT_JS)
 
     if not orders:
         title = await page.title()
         body_snippet = await page.evaluate("() => document.body.innerText.slice(0, 300)")
-        card_count_raw = await page.evaluate("() => document.querySelectorAll('.want-card').length")
         print(
             f"[parser][debug] fc={category_id} | title='{title}' | "
             f".want-card найдено сырых: {card_count_raw} | "
@@ -154,15 +159,14 @@ async def fetch_new_orders() -> list[dict]:
         if not await ensure_browser():
             return new_orders
 
-        try:
-            user_agent = random.choice(USER_AGENTS)
-            page = await browser.new_page(user_agent=user_agent)
-
-            logger.info("Категории для парсинга: %s", settings.KWORK_CATEGORY_IDS)
-
-            for category_id in settings.KWORK_CATEGORY_IDS:
+        for category_id in settings.KWORK_CATEGORY_IDS:
+            page = None
+            try:
                 if not await ensure_browser():
                     break
+
+                user_agent = random.choice(USER_AGENTS)
+                page = await browser.new_page(user_agent=user_agent)
 
                 try:
                     orders = await fetch_orders_for_category(page, category_id)
@@ -222,15 +226,21 @@ async def fetch_new_orders() -> list[dict]:
                         )
                         break
 
-                await asyncio.sleep(8 + random.uniform(0, 4))
+            except Exception as e:
+                logger.exception("Критическая ошибка в парсере для категории %s: %s", category_id, e)
+            finally:
+                if page:
+                    try:
+                        await page.close()
+                    except Exception as e:
+                        logger.error("Ошибка при закрытии страницы: %s", e)
+                if browser:
+                    try:
+                        await browser.close()
+                    except Exception as e:
+                        logger.error("Ошибка при закрытии браузера: %s", e)
+                    browser = None
 
-        except Exception as e:
-            logger.exception("Критическая ошибка в парсере: %s", e)
-        finally:
-            if browser:
-                try:
-                    await browser.close()
-                except Exception as e:
-                    logger.error("Ошибка при закрытии браузера: %s", e)
+            await asyncio.sleep(8 + random.uniform(0, 4))
 
     return new_orders
