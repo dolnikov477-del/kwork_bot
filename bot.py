@@ -17,7 +17,7 @@ from aiogram.types import (
 from ai_responder import generate_reply
 from config import settings
 from kwork_parser import fetch_new_orders
-from storage import get_order, init_db, save_order
+from storage import get_order, init_db, save_order, is_seen, clear_all_orders
 
 logger = logging.getLogger(__name__)
 
@@ -181,11 +181,16 @@ async def notify_new_order(order: dict) -> None:
 
 
 async def polling_loop() -> None:
+    clear_all_orders()
     init_db()
     while True:
         try:
             new_orders = await fetch_new_orders()
             for order in new_orders:
+                order_id = order.get("id")
+                if order_id and is_seen(order_id):
+                    logger.debug("Пропуск заказа %s: уже в памяти", order_id)
+                    continue
                 try:
                     await notify_new_order(order)
                 except Exception as e:
