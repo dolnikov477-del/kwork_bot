@@ -148,13 +148,14 @@ def get_all_seen_ids() -> set[str]:
 def clear_all_orders() -> None:
     global _orders
     _orders = {}
+    print(f"[storage] clear_all_orders: очищаю память и файл {SEEN_ORDERS_FILE}")
     if os.path.exists(SEEN_ORDERS_FILE):
         try:
             os.remove(SEEN_ORDERS_FILE)
-            logger.info("Файл %s удалён", SEEN_ORDERS_FILE)
+            print(f"[storage] clear_all_orders: файл {SEEN_ORDERS_FILE} удалён")
         except OSError as e:
-            logger.error("Не удалось удалить %s: %s", SEEN_ORDERS_FILE, e)
-    logger.info("Все заказы из памяти очищены")
+            print(f"[storage] clear_all_orders: не удалось удалить {SEEN_ORDERS_FILE}: {e}")
+    print("[storage] clear_all_orders: все заказы из памяти очищены")
 
 
 def has_any_seen() -> bool:
