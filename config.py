@@ -30,10 +30,10 @@ class Settings:
     KEYWORDS: list[str] = []
 
     # Интервал проверки
-    POLL_INTERVAL: int = int(os.getenv("POLL_INTERVAL", "300"))
+    POLL_INTERVAL: int = int(os.getenv("POLL_INTERVAL", "3600"))
 
     # Фильтр старых/запаленных заказов
-    MAX_REPLIES: int = int(os.getenv("MAX_REPLIES", "6"))
+    MAX_REPLIES: int = int(os.getenv("MAX_REPLIES", "5"))
     MAX_AGE_HOURS: int = int(os.getenv("MAX_AGE_HOURS", "2"))
 
     # Таймаут загрузки страницы в парсере (миллисекунды)
@@ -46,7 +46,10 @@ class Settings:
     SEEN_ORDER_TTL_HOURS: int = int(os.getenv("SEEN_ORDER_TTL_HOURS", "2"))
 
     # Максимум заказов из одной категории за один цикл
-    MAX_ORDERS_PER_CATEGORY: int = int(os.getenv("MAX_ORDERS_PER_CATEGORY", "3"))
+    MAX_ORDERS_PER_CATEGORY: int = int(os.getenv("MAX_ORDERS_PER_CATEGORY", "1"))
+
+    # Общий лимит заказов за один цикл опроса
+    MAX_ORDERS_PER_CYCLE: int = int(os.getenv("MAX_ORDERS_PER_CYCLE", "5"))
 
     # Ограничения для файла просмотренных заказов
     MAX_SEEN_ORDERS: int = int(os.getenv("MAX_SEEN_ORDERS", "30"))

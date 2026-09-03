@@ -216,6 +216,13 @@ async def fetch_new_orders() -> list[dict]:
                         )
                         continue
 
+                    if len(new_orders) >= settings.MAX_ORDERS_PER_CYCLE:
+                        logger.info(
+                            "Достигнут общий лимит заказов за цикл: %d",
+                            settings.MAX_ORDERS_PER_CYCLE,
+                        )
+                        break
+
                     new_orders.append(order)
                     sent_in_category += 1
                     if sent_in_category >= settings.MAX_ORDERS_PER_CATEGORY:
