@@ -33,29 +33,31 @@ def _cleanup_expired() -> None:
     for order_id in expired:
         del _orders[order_id]
     if expired:
+        print(f"[storage] _cleanup_expired: удалено {len(expired)} заказов старше {SEEN_ORDER_TTL_HOURS}ч")
         logger.info("Удалено просмотренных заказов по TTL: %d", len(expired))
 
 
 def _cleanup_if_needed() -> None:
     global _orders
-    if len(_orders) <= MAX_SEEN_ORDERS:
-        return
     now = datetime.now(timezone.utc)
     cutoff = now.timestamp() - (SEEN_ORDER_MAX_AGE_DAYS * 24 * 3600)
     to_remove = []
     for order_id, order in _orders.items():
         seen_at = order.get("seen_at")
         if not seen_at:
+            to_remove.append(order_id)
             continue
         try:
             ts = datetime.fromisoformat(seen_at).timestamp()
         except Exception:
+            to_remove.append(order_id)
             continue
         if ts < cutoff:
             to_remove.append(order_id)
     for order_id in to_remove:
         del _orders[order_id]
     if to_remove:
+        print(f"[storage] _cleanup_if_needed: удалено {len(to_remove)} заказов старше {SEEN_ORDER_MAX_AGE_DAYS}д")
         logger.info("Удалено старых заказов при превышении лимита %d: %d", MAX_SEEN_ORDERS, len(to_remove))
 
 
@@ -81,8 +83,18 @@ def init_db() -> None:
                     for order in data.get("orders", [])
                     if order.get("id")
                 }
+            print(f"[storage] init_db: загружено {len(_orders)} заказов из {SEEN_ORDERS_FILE}")
             _cleanup_expired()
             _cleanup_if_needed()
+            if len(_orders) > MAX_SEEN_ORDERS:
+                sorted_by_seen = sorted(
+                    _orders.items(),
+                    key=lambda kv: kv[1].get("seen_at", ""),
+                )
+                excess = len(_orders) - MAX_SEEN_ORDERS
+                for old_id, _ in sorted_by_seen[:excess]:
+                    del _orders[old_id]
+                print(f"[storage] init_db: жёсткая очистка при загрузке, удалено {excess}, осталось {len(_orders)}")
             _last_cleanup = datetime.now(timezone.utc)
             logger.info("Загружено просмотренных заказов: %d", len(_orders))
         except (json.JSONDecodeError, OSError) as e:
@@ -91,7 +103,6 @@ def init_db() -> None:
     else:
         _orders = {}
         logger.info("Файл %s не найден, начинаем с пустого списка", SEEN_ORDERS_FILE)
-        # Ensure the directory exists for future writes
         dir_name = os.path.dirname(SEEN_ORDERS_FILE)
         if dir_name and not os.path.exists(dir_name):
             try:
@@ -132,7 +143,21 @@ def save_order(order: dict) -> None:
         os.replace(tmp_path, SEEN_ORDERS_FILE)
         logger.info("Сохранён заказ %s в %s", order_id, SEEN_ORDERS_FILE)
         logger.info("Сохранено заказов: %d", len(_orders))
+        _cleanup_expired()
         _cleanup_if_needed()
+        if len(_orders) > MAX_SEEN_ORDERS:
+            sorted_by_seen = sorted(
+                _orders.items(),
+                key=lambda kv: kv[1].get("seen_at", ""),
+            )
+            excess = len(_orders) - MAX_SEEN_ORDERS
+            for old_id, _ in sorted_by_seen[:excess]:
+                del _orders[old_id]
+            print(f"[storage] жёсткая очистка: удалено {excess} самых старых заказов, осталось {len(_orders)}")
+            tmp_path = SEEN_ORDERS_FILE + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump({"orders": list(_orders.values())}, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, SEEN_ORDERS_FILE)
     except OSError as e:
         logger.error("Не удалось сохранить заказ %s в %s: %s", order_id, SEEN_ORDERS_FILE, e)
 
