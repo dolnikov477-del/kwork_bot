@@ -161,8 +161,13 @@ async def fetch_new_orders() -> list[dict]:
 
         for category_id in settings.KWORK_CATEGORY_IDS:
             page = None
+            cycle_full = False
             try:
                 if not await ensure_browser():
+                    break
+
+                if len(new_orders) >= settings.MAX_ORDERS_PER_CYCLE:
+                    cycle_full = True
                     break
 
                 user_agent = random.choice(USER_AGENTS)
@@ -221,6 +226,7 @@ async def fetch_new_orders() -> list[dict]:
                             "Достигнут общий лимит заказов за цикл: %d",
                             settings.MAX_ORDERS_PER_CYCLE,
                         )
+                        cycle_full = True
                         break
 
                     new_orders.append(order)
@@ -247,6 +253,9 @@ async def fetch_new_orders() -> list[dict]:
                     except Exception as e:
                         logger.error("Ошибка при закрытии браузера: %s", e)
                     browser = None
+
+            if cycle_full:
+                break
 
             await asyncio.sleep(8 + random.uniform(0, 4))
 

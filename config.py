@@ -46,10 +46,10 @@ class Settings:
     SEEN_ORDER_TTL_HOURS: int = int(os.getenv("SEEN_ORDER_TTL_HOURS", "2"))
 
     # Максимум заказов из одной категории за один цикл
-    MAX_ORDERS_PER_CATEGORY: int = int(os.getenv("MAX_ORDERS_PER_CATEGORY", "1"))
+    MAX_ORDERS_PER_CATEGORY: int = int(os.getenv("MAX_ORDERS_PER_CATEGORY", "5"))
 
     # Общий лимит заказов за один цикл опроса
-    MAX_ORDERS_PER_CYCLE: int = int(os.getenv("MAX_ORDERS_PER_CYCLE", "5"))
+    MAX_ORDERS_PER_CYCLE: int = int(os.getenv("MAX_ORDERS_PER_CYCLE", "25"))
 
     # Ограничения для файла просмотренных заказов
     MAX_SEEN_ORDERS: int = int(os.getenv("MAX_SEEN_ORDERS", "30"))
