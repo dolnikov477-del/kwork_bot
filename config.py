@@ -34,7 +34,7 @@ class Settings:
 
     # Фильтр старых/запаленных заказов
     MAX_REPLIES: int = int(os.getenv("MAX_REPLIES", "3"))
-    MAX_AGE_HOURS: int = int(os.getenv("MAX_AGE_HOURS", "2"))
+    MAX_AGE_HOURS: float = float(os.getenv("MAX_AGE_HOURS", "0.5"))
 
     # Таймаут загрузки страницы в парсере (миллисекунды)
     PAGE_LOAD_TIMEOUT: int = int(os.getenv("PAGE_LOAD_TIMEOUT", "30000"))
