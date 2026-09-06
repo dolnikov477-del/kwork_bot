@@ -33,7 +33,7 @@ class Settings:
     POLL_INTERVAL: int = int(os.getenv("POLL_INTERVAL", "600"))
 
     # Фильтр старых/запаленных заказов
-    MAX_REPLIES: int = int(os.getenv("MAX_REPLIES", "3"))
+    MAX_REPLIES: int = int(os.getenv("MAX_REPLIES", "5"))
     MAX_AGE_HOURS: float = float(os.getenv("MAX_AGE_HOURS", "0.5"))
 
     # Таймаут загрузки страницы в парсере (миллисекунды)
