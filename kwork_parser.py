@@ -101,6 +101,10 @@ async def fetch_orders_for_category(page, category_id: str) -> list[dict]:
     
     orders = await page.evaluate(_EXTRACT_JS)
 
+    logger.info("[parser] Категория %s: распарсено заказов: %d", category_id, len(orders))
+    for o in orders:
+        logger.info("[parser] Заказ %s | title=%s | repliesText=%r | publishedAt=%r", o.get('id'), o.get('title','')[:50], o.get('repliesText',''), o.get('publishedAt',''))
+
     if not orders:
         title = await page.title()
         body_snippet = await page.evaluate("() => document.body.innerText.slice(0, 300)")
@@ -209,6 +213,13 @@ async def fetch_new_orders() -> list[dict]:
                             order_id,
                             replies_count,
                             settings.MAX_REPLIES,
+                        )
+                        continue
+
+                    if not order.get("repliesText"):
+                        logger.warning(
+                            "Заказ %s: repliesText пуст — не могу проверить количество откликов, пропускаю",
+                            order_id,
                         )
                         continue
 
