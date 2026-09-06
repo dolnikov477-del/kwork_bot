@@ -206,20 +206,16 @@ async def fetch_new_orders() -> list[dict]:
                         logger.debug("Пропуск заказа %s: уже отправлен", order_id)
                         continue
 
-                    replies_count = _parse_replies_count(order.get("repliesText", ""))
+                    if order.get("repliesText") == "":
+                        replies_count = 0
+                    else:
+                        replies_count = _parse_replies_count(order.get("repliesText", ""))
                     if replies_count > settings.MAX_REPLIES:
                         logger.info(
                             "Пропуск заказа %s: откликов %d > %d",
                             order_id,
                             replies_count,
                             settings.MAX_REPLIES,
-                        )
-                        continue
-
-                    if not order.get("repliesText"):
-                        logger.warning(
-                            "Заказ %s: repliesText пуст — не могу проверить количество откликов, пропускаю",
-                            order_id,
                         )
                         continue
 
