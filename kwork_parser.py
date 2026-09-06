@@ -143,7 +143,6 @@ async def fetch_new_orders() -> list[dict]:
                                 "--no-sandbox",
                                 "--disable-setuid-sandbox",
                                 "--disable-gpu",
-                                "--single-process",
                             ],
                         )
                         logger.info("Браузер успешно запущен (попытка %d)", attempt)
