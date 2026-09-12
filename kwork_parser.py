@@ -67,8 +67,16 @@ _EXTRACT_JS = """
         const price =
             card.querySelector('.wants-card__right')?.innerText?.trim() || '';
 
-        const repliesText =
-            card.querySelector('.wants-card__footer-item')?.innerText?.trim() || '';
+        // Kwork изменил структуру: количество откликов теперь в span с текстом "Предложений: N"
+        let repliesText = '';
+        const repliesSpans = card.querySelectorAll('span');
+        for (const span of repliesSpans) {
+            const txt = span.innerText || '';
+            if (txt.includes('Предложений')) {
+                repliesText = txt.trim();
+                break;
+            }
+        }
 
         const publishedAt =
             card.querySelector('time')?.getAttribute('datetime') || '';
@@ -103,7 +111,11 @@ async def fetch_orders_for_category(page, category_id: str) -> list[dict]:
 
     logger.info("[parser] Категория %s: распарсено заказов: %d", category_id, len(orders))
     for o in orders:
-        logger.info("[parser] Заказ %s | title=%s | repliesText=%r | publishedAt=%r", o.get('id'), o.get('title','')[:50], o.get('repliesText',''), o.get('publishedAt',''))
+        _rc = _parse_replies_count(o.get('repliesText', ''))
+        logger.info(
+            "[parser] Заказ %s | title=%s | repliesText=%r | replies_count=%d | publishedAt=%r",
+            o.get('id'), o.get('title', '')[:50], o.get('repliesText', ''), _rc, o.get('publishedAt', '')
+        )
 
     if not orders:
         title = await page.title()
@@ -206,10 +218,11 @@ async def fetch_new_orders() -> list[dict]:
                         logger.debug("Пропуск заказа %s: уже отправлен", order_id)
                         continue
 
-                    if order.get("repliesText") == "":
-                        replies_count = 0
-                    else:
-                        replies_count = _parse_replies_count(order.get("repliesText", ""))
+                    replies_count = _parse_replies_count(order.get("repliesText", ""))
+                    logger.info(
+                        "[parser] Обработка заказа %s: replies_count=%d (repliesText=%r)",
+                        order_id, replies_count, order.get("repliesText", "")
+                    )
                     if replies_count > settings.MAX_REPLIES:
                         logger.info(
                             "Пропуск заказа %s: откликов %d > %d",
