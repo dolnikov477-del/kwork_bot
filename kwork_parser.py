@@ -160,6 +160,10 @@ async def fetch_new_orders() -> list[dict]:
                                 "--disable-setuid-sandbox",
                                 "--disable-gpu",
                             ],
+                            env={
+                                "XDG_CONFIG_HOME": "/tmp",
+                                "XDG_CACHE_HOME": "/tmp",
+                            },
                         )
                         logger.info("Браузер успешно запущен (попытка %d)", attempt)
                         return True
