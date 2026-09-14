@@ -270,12 +270,6 @@ async def fetch_new_orders() -> list[dict]:
                         await page.close()
                     except Exception as e:
                         logger.error("Ошибка при закрытии страницы: %s", e)
-                if browser:
-                    try:
-                        await browser.close()
-                    except Exception as e:
-                        logger.error("Ошибка при закрытии браузера: %s", e)
-                    browser = None
 
             if cycle_full:
                 break
