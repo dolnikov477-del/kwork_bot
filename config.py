@@ -19,6 +19,8 @@ class Settings:
     # Groq
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
     GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile")
+    GROQ_BASE_URL: str = os.getenv("GROQ_BASE_URL", "")
+    PROXY_URL: str = os.getenv("PROXY_URL", "")
 
     # Категории Kwork
     category_ids_str = os.getenv("KWORK_CATEGORY_IDS", "")

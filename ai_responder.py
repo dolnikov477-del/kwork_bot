@@ -1,4 +1,5 @@
 from groq import Groq
+import httpx
 
 from config import settings
 import logging
@@ -6,7 +7,16 @@ import time
 
 logger = logging.getLogger(__name__)
 
-_client = Groq(api_key=settings.GROQ_API_KEY)
+_http_client = None
+if settings.PROXY_URL:
+    _http_client = httpx.Client(proxies=settings.PROXY_URL)
+    logger.info("Используется прокси: %s", settings.PROXY_URL)
+
+_client = Groq(
+    api_key=settings.GROQ_API_KEY,
+    http_client=_http_client,
+    base_url=settings.GROQ_BASE_URL or None,
+)
 
 # Черновой системный промт. Дальше его будем дорабатывать под твой стиль/нишу.
 SYSTEM_PROMPT = """Ты — Артём, человек из агентства Find. Пишешь отклик на заказ на Kwork. Пиши так, как писал бы реальный человек в переписке, а не шаблонный текст.
