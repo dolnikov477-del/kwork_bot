@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 _http_client = None
 if settings.PROXY_URL:
-    _http_client = httpx.Client(proxies=settings.PROXY_URL)
+    _http_client = httpx.Client(proxy=settings.PROXY_URL)
     logger.info("Используется прокси: %s", settings.PROXY_URL)
 
 _client = Groq(
