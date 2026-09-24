@@ -17,6 +17,7 @@ _client = Groq(
     http_client=_http_client,
     base_url=settings.GROQ_BASE_URL or None,
 )
+logger.info("AI client base_url: %s", settings.GROQ_BASE_URL or "default (api.groq.com)")
 
 # Черновой системный промт. Дальше его будем дорабатывать под твой стиль/нишу.
 SYSTEM_PROMPT = """Ты — Артём, человек из агентства Find. Пишешь отклик на заказ на Kwork. Пиши так, как писал бы реальный человек в переписке, а не шаблонный текст.
