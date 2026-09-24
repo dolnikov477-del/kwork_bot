@@ -13,15 +13,13 @@ if settings.PROXY_URL:
     _http_client = httpx.Client(proxy=settings.PROXY_URL)
     logger.info("Используется прокси: %s", settings.PROXY_URL)
 
-base_url = os.getenv("GROQ_BASE_URL", "https://api.deepseek.com/v1")
-default_model = os.getenv("GROQ_MODEL", "deepseek-chat")
-
 _client = OpenAI(
-    api_key=settings.GROQ_API_KEY,
+    api_key=os.getenv("GROQ_API_KEY"),
+    base_url=os.getenv("GROQ_BASE_URL", "https://api.deepseek.com"),
     http_client=_http_client,
-    base_url=base_url,
 )
-logger.info("AI client base_url: %s, model: %s", base_url, default_model)
+default_model = os.getenv("GROQ_MODEL", "deepseek-chat")
+logger.info("AI client base_url: %s, model: %s", _client.base_url, default_model)
 
 
 # Черновой системный промт. Дальше его будем дорабатывать под твой стиль/нишу.
