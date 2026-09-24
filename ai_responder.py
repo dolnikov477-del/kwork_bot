@@ -15,10 +15,10 @@ if settings.PROXY_URL:
 
 _client = OpenAI(
     api_key=os.getenv("GROQ_API_KEY"),
-    base_url=os.getenv("GROQ_BASE_URL", "https://api.deepseek.com"),
+    base_url=os.getenv("GROQ_BASE_URL", "https://openrouter.ai/api/v1"),
     http_client=_http_client,
 )
-default_model = os.getenv("GROQ_MODEL", "deepseek-chat")
+default_model = os.getenv("GROQ_MODEL", "qwen/qwen-2.5-72b-instruct:free")
 logger.info("AI client base_url: %s, model: %s", _client.base_url, default_model)
 
 
@@ -71,14 +71,14 @@ def generate_reply(title: str, description: str, price: str = "") -> str:
         "— Пиши как реальный человек, а не как шаблонный отклик."
     )
 
-    models = [default_model, "deepseek-coder"]
+    models = [default_model, "qwen/qwen-2.5-72b-instruct:free"]
     max_retries = 3
     base_delay = 2.0
 
     for model_name in models:
         for i in range(max_retries):
             try:
-                logger.info("Вызываю DeepSeek с моделью '%s'... (попытка %d/%d)", model_name, i + 1, max_retries)
+                logger.info("Вызываю OpenRouter с моделью '%s'... (попытка %d/%d)", model_name, i + 1, max_retries)
                 completion = _client.chat.completions.create(
                     model=model_name,
                     messages=[
@@ -99,7 +99,7 @@ def generate_reply(title: str, description: str, price: str = "") -> str:
                     logger.warning("Получен пустой ответ от AI (попытка %d/%d)", i + 1, max_retries)
 
             except Exception as e:
-                logger.error("DeepSeek error с моделью '%s' (попытка %d/%d): %s", model_name, i + 1, max_retries, e)
+                logger.error("OpenRouter error с моделью '%s' (попытка %d/%d): %s", model_name, i + 1, max_retries, e)
                 if i < max_retries - 1:
                     logger.info("Ожидание %.1f секунд перед повторной попыткой", base_delay)
                     time.sleep(base_delay)
