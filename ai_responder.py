@@ -1,4 +1,4 @@
-from groq import Groq
+from openai import OpenAI
 import httpx
 import os
 
@@ -13,15 +13,16 @@ if settings.PROXY_URL:
     _http_client = httpx.Client(proxy=settings.PROXY_URL)
     logger.info("Используется прокси: %s", settings.PROXY_URL)
 
-base_url = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
-model = os.getenv("GROQ_MODEL", "qwen/qwen-2.5-72b-instruct:free")
+base_url = os.getenv("GROQ_BASE_URL", "https://api.deepseek.com/v1")
+default_model = os.getenv("GROQ_MODEL", "deepseek-chat")
 
-_client = Groq(
+_client = OpenAI(
     api_key=settings.GROQ_API_KEY,
     http_client=_http_client,
     base_url=base_url,
 )
-logger.info("AI client base_url: %s, model: %s", base_url, model)
+logger.info("AI client base_url: %s, model: %s", base_url, default_model)
+
 
 # Черновой системный промт. Дальше его будем дорабатывать под твой стиль/нишу.
 SYSTEM_PROMPT = """Ты — Артём, человек из агентства Find. Пишешь отклик на заказ на Kwork. Пиши так, как писал бы реальный человек в переписке, а не шаблонный текст.
@@ -68,20 +69,20 @@ def generate_reply(title: str, description: str, price: str = "") -> str:
         "api → интерфейс, crm → система клиентской работы, bot → бот, web → сайт, "
         "url → ссылка, html/css → html/css (можно как технические термины).\n"
         "— Никаких эмодзи, markdown, списков, заголовков.\n"
-        "— Никаких клише: "качественно", "под ключ", "опытная команда", "гарантируем".\n"
+        "— Никаких клише: \"качественно\", \"под ключ\", \"опытная команда\", \"гарантируем\".\n"
         "— Пиши как реальный человек, а не как шаблонный отклик."
     )
 
-    models = [model, "qwen/qwen3.6-27b"]
+    models = [default_model, "deepseek-coder"]
     max_retries = 3
     base_delay = 2.0
 
-    for model in models:
+    for model_name in models:
         for i in range(max_retries):
             try:
-                logger.info("Вызываю Groq с моделью '%s'... (попытка %d/%d)", model, i + 1, max_retries)
+                logger.info("Вызываю DeepSeek с моделью '%s'... (попытка %d/%d)", model_name, i + 1, max_retries)
                 completion = _client.chat.completions.create(
-                    model=model,
+                    model=model_name,
                     messages=[
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": user_prompt},
@@ -100,7 +101,7 @@ def generate_reply(title: str, description: str, price: str = "") -> str:
                     logger.warning("Получен пустой ответ от AI (попытка %d/%d)", i + 1, max_retries)
 
             except Exception as e:
-                logger.error("Groq error с моделью '%s' (попытка %d/%d): %s", model, i + 1, max_retries, e)
+                logger.error("DeepSeek error с моделью '%s' (попытка %d/%d): %s", model_name, i + 1, max_retries, e)
                 if i < max_retries - 1:
                     logger.info("Ожидание %.1f секунд перед повторной попыткой", base_delay)
                     time.sleep(base_delay)
