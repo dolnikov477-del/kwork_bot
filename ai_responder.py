@@ -18,7 +18,7 @@ _client = OpenAI(
     base_url=os.getenv("GROQ_BASE_URL", "https://openrouter.ai/api/v1"),
     http_client=_http_client,
 )
-default_model = os.getenv("GROQ_MODEL", "qwen/qwen-2.5-72b-instruct:free")
+default_model = os.getenv("GROQ_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
 logger.info("AI client base_url: %s, model: %s", _client.base_url, default_model)
 
 
@@ -71,7 +71,7 @@ def generate_reply(title: str, description: str, price: str = "") -> str:
         "— Пиши как реальный человек, а не как шаблонный отклик."
     )
 
-    models = [default_model, "qwen/qwen-2.5-72b-instruct:free"]
+    models = [default_model, "meta-llama/llama-3.1-8b-instruct:free"]
     max_retries = 3
     base_delay = 2.0
 
