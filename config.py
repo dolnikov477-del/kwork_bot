@@ -15,7 +15,7 @@ class Settings:
     TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
 
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-1.5-flash-latest")
 
     category_ids_str = os.getenv("KWORK_CATEGORY_IDS", "")
     category_ids = [int(cat.strip()) for cat in category_ids_str.split(",") if cat.strip()]
