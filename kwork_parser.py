@@ -8,6 +8,7 @@ import asyncio
 import logging
 import random
 import re
+import signal
 from datetime import datetime, timezone
 from typing import AsyncGenerator
 
@@ -23,9 +24,11 @@ KWORK_BASE_URL = "https://kwork.ru/projects"
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
 ]
+
+_shutdown_event = asyncio.Event()
 
 
 def _parse_replies_count(text: str) -> int:
@@ -145,6 +148,19 @@ async def fetch_new_orders() -> AsyncGenerator[dict, None]:
     Проходит категории последовательно, внутри категории — по заказам.
     Фильтрует старые, забитые и уже отправленные заказы на лету.
     """
+    _shutdown_event.clear()
+    
+    def _signal_handler():
+        logger.info("Получен сигнал завершения, останавливаю парсер...")
+        _shutdown_event.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, _signal_handler)
+        except NotImplementedError:
+            pass  # Windows
+
     async with async_playwright() as p:
         browser = None
         max_launch_attempts = 3
@@ -196,70 +212,85 @@ async def fetch_new_orders() -> AsyncGenerator[dict, None]:
         if not await ensure_browser():
             return
 
-        for category_id in settings.KWORK_CATEGORY_IDS:
-            page = None
-            try:
-                if not await ensure_browser():
+        try:
+            for category_id in settings.KWORK_CATEGORY_IDS:
+                if _shutdown_event.is_set():
+                    logger.info("Завершение по сигналу, прерываю парсинг")
                     break
 
-                user_agent = random.choice(USER_AGENTS)
-                page = await browser.new_page(user_agent=user_agent)
-                page.set_default_timeout(15000)
-
+                page = None
                 try:
-                    orders = await _fetch_orders_for_category(page, category_id)
-                except Exception as e:
-                    logger.exception("Ошибка при обходе категории %s: %s", category_id, e)
-                    await asyncio.sleep(3)
-                    continue
-
-                sent_in_category = 0
-
-                for order in orders:
-                    order_id = order.get("id")
-                    if not order_id:
-                        continue
-
-                    if is_seen(order_id):
-                        logger.debug("Пропуск заказа %s: уже отправлен", order_id)
-                        continue
-
-                    replies_count = _parse_replies_count(order.get("repliesText", ""))
-                    logger.info(
-                        "[parser] Обработка заказа %s: replies_count=%d (repliesText=%r)",
-                        order_id, replies_count, order.get("repliesText", "")
-                    )
-                    if replies_count > settings.MAX_REPLIES:
-                        logger.info(
-                            "Пропуск заказа %s: откликов %d > %d",
-                            order_id, replies_count, settings.MAX_REPLIES
-                        )
-                        continue
-
-                    if _is_too_old(order.get("publishedAt", "")):
-                        logger.info(
-                            "Пропуск заказа %s: заказ старше %.1f часов",
-                            order_id, settings.MAX_AGE_HOURS
-                        )
-                        continue
-
-                    if sent_in_category >= settings.MAX_ORDERS_PER_CATEGORY:
-                        logger.info(
-                            "Достигнут лимит заказов для категории %s: %d",
-                            category_id, settings.MAX_ORDERS_PER_CATEGORY
-                        )
+                    if not await ensure_browser():
                         break
 
-                    sent_in_category += 1
-                    yield order
+                    user_agent = random.choice(USER_AGENTS)
+                    page = await browser.new_page(user_agent=user_agent)
+                    page.set_default_timeout(15000)
 
-            except Exception as e:
-                logger.exception("Критическая ошибка в парсере для категории %s: %s", category_id, e)
-            finally:
-                if page:
                     try:
-                        await page.close()
+                        orders = await _fetch_orders_for_category(page, category_id)
                     except Exception as e:
-                        logger.error("Ошибка при закрытии страницы: %s", e)
+                        logger.exception("Ошибка при обходе категории %s: %s", category_id, e)
+                        await asyncio.sleep(3)
+                        continue
 
-            await asyncio.sleep(3 + random.uniform(0, 2))
+                    sent_in_category = 0
+
+                    for order in orders:
+                        if _shutdown_event.is_set():
+                            break
+                        order_id = order.get("id")
+                        if not order_id:
+                            continue
+
+                        if is_seen(order_id):
+                            logger.debug("Пропуск заказа %s: уже отправлен", order_id)
+                            continue
+
+                        replies_count = _parse_replies_count(order.get("repliesText", ""))
+                        logger.info(
+                            "[parser] Обработка заказа %s: replies_count=%d (repliesText=%r)",
+                            order_id, replies_count, order.get("repliesText", "")
+                        )
+                        if replies_count > settings.MAX_REPLIES:
+                            logger.info(
+                                "Пропуск заказа %s: откликов %d > %d",
+                                order_id, replies_count, settings.MAX_REPLIES
+                            )
+                            continue
+
+                        if _is_too_old(order.get("publishedAt", "")):
+                            logger.info(
+                                "Пропуск заказа %s: заказ старше %.1f часов",
+                                order_id, settings.MAX_AGE_HOURS
+                            )
+                            continue
+
+                        if sent_in_category >= settings.MAX_ORDERS_PER_CATEGORY:
+                            logger.info(
+                                "Достигнут лимит заказов для категории %s: %d",
+                                category_id, settings.MAX_ORDERS_PER_CATEGORY
+                            )
+                            break
+
+                        sent_in_category += 1
+                        yield order
+
+                except Exception as e:
+                    logger.exception("Критическая ошибка в парсере для категории %s: %s", category_id, e)
+                finally:
+                    if page:
+                        try:
+                            await page.close()
+                        except Exception as e:
+                            logger.error("Ошибка при закрытии страницы: %s", e)
+
+                await asyncio.sleep(3 + random.uniform(0, 2))
+        finally:
+            # Гарантированно закрываем браузер при выходе
+            if browser:
+                try:
+                    await browser.close()
+                    logger.info("Браузер закрыт корректно")
+                except Exception as e:
+                    logger.error("Ошибка при закрытии браузера: %s", e)

@@ -113,14 +113,18 @@ async def on_start(message: Message) -> None:
 
 @dp.callback_query(F.data.startswith("gen:"))
 async def on_generate_reply(callback: CallbackQuery) -> None:
+    # СРАЗУ отвечаем на callback, чтобы не было "query is too old"
+    await callback.answer()
+    
     order_id = callback.data.split(":", 1)[1]
     order = get_order(order_id)
 
     if not order:
-        await callback.answer("Не нашёл данные по этому заказу :(", show_alert=True)
+        await callback.message.answer("Не нашёл данные по этому заказу :(")
         return
 
-    await callback.answer("Генерирую отклик...")
+    # Отправляем сообщение "Генерирую..."
+    status_msg = await callback.message.answer("⏳ Генерирую отклик...")
 
     reply_text = ""
     max_retries = 3
@@ -128,8 +132,8 @@ async def on_generate_reply(callback: CallbackQuery) -> None:
     
     for i in range(max_retries):
         try:
-            reply_text = await asyncio.to_thread(
-                generate_reply, order["title"], order["description"], order.get("price", "")
+            reply_text = await generate_reply(
+                order["title"], order["description"], order.get("price", "")
             )
         except Exception as e:
             logger.error("Ошибка генерации отклика (попытка %d/%d): %s", i + 1, max_retries, e)
@@ -143,6 +147,12 @@ async def on_generate_reply(callback: CallbackQuery) -> None:
             logger.warning("Получен пустой отклик от AI (попытка %d/%d)", i + 1, max_retries)
             if i < max_retries - 1:
                 await asyncio.sleep(base_delay * (2 ** i))
+
+    # Удаляем статус-сообщение
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
 
     if not reply_text or not reply_text.strip():
         logger.error("Не удалось сгенерировать валидный отклик для заказа %s после %d попыток", order_id, max_retries)

@@ -1,5 +1,7 @@
 import os
 import logging
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 from google import genai
 from google.genai import types
@@ -9,12 +11,16 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 _client: genai.Client | None = None
+_executor: ThreadPoolExecutor | None = None
 
-if settings.GEMINI_API_KEY:
-    _client = genai.Client(api_key=settings.GEMINI_API_KEY)
-    logger.info("Gemini API настроен (новый SDK), модель: %s", settings.GEMINI_MODEL)
-else:
-    logger.warning("GEMINI_API_KEY не задан, генерация откликов не будет работать")
+def _get_client() -> genai.Client | None:
+    global _client, _executor
+    if _client is None and settings.GEMINI_API_KEY:
+        _client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        logger.info("Gemini API настроен, модель: %s", settings.GEMINI_MODEL)
+    if _executor is None:
+        _executor = ThreadPoolExecutor(max_workers=1)
+    return _client
 
 
 SYSTEM_PROMPT = """Ты — Артём, фрилансер, который отвечает на заказы на Kwork. Пиши отклик как в реальном чате — живо, по-человечески, без шаблонов и формальностей.
@@ -45,9 +51,11 @@ SYSTEM_PROMPT = """Ты — Артём, фрилансер, который от�
 """
 
 
-def generate_reply(title: str, description: str, price: str = "") -> str:
-    if _client is None:
-        logger.error("GEMINI_API_KEY не настроен")
+def _generate_reply_sync(title: str, description: str, price: str = "") -> str:
+    """Синхронная генерация для выполнения в пуле потоков."""
+    client = _get_client()
+    if client is None:
+        logger.error("GEMINI_API_KEY не настроен в переменных окружения")
         return ""
 
     user_prompt = (
@@ -66,7 +74,7 @@ def generate_reply(title: str, description: str, price: str = "") -> str:
     for i in range(max_retries):
         try:
             logger.info("Вызываю Gemini API (попытка %d/%d)...", i + 1, max_retries)
-            response = _client.models.generate_content(
+            response = client.models.generate_content(
                 model=settings.GEMINI_MODEL,
                 contents=[
                     types.Content(role="user", parts=[types.Part(text=SYSTEM_PROMPT)]),
@@ -95,3 +103,20 @@ def generate_reply(title: str, description: str, price: str = "") -> str:
 
     logger.error("Не удалось получить ответ от Gemini после %d попыток", max_retries)
     return ""
+
+
+async def generate_reply(title: str, description: str, price: str = "") -> str:
+    """Асинхронная обёртка с таймаутом 30 секунд."""
+    try:
+        return await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(
+                _executor, _generate_reply_sync, title, description, price
+            ),
+            timeout=30.0
+        )
+    except asyncio.TimeoutError:
+        logger.error("Таймаут генерации отклика (>30 сек) для заказа: %s", title[:50])
+        return ""
+    except Exception as e:
+        logger.error("Ошибка генерации отклика: %s", e)
+        return ""
