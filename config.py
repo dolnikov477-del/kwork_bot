@@ -14,6 +14,12 @@ class Settings:
 
     TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
 
+    # YandexGPT (рекомендуется для РФ)
+    YANDEX_API_KEY: str = os.getenv("YANDEX_API_KEY", "")
+    YANDEX_FOLDER_ID: str = os.getenv("YANDEX_FOLDER_ID", "")
+    YANDEX_MODEL: str = os.getenv("YANDEX_MODEL", "yandexgpt-lite")
+
+    # Gemini API (запасной вариант, требует VPN в РФ)
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-1.5-flash-latest")
 

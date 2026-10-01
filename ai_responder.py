@@ -1,26 +1,33 @@
 import os
 import logging
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-
-from google import genai
-from google.genai import types
+import httpx
+import json
 
 from config import settings
 
 logger = logging.getLogger(__name__)
 
-_client: genai.Client | None = None
-_executor: ThreadPoolExecutor | None = None
+# YandexGPT configuration
+YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID", "")
+YANDEX_API_KEY = os.getenv("YANDEX_API_KEY", "")
+YANDEX_MODEL = os.getenv("YANDEX_MODEL", "yandexgpt-lite")  # или yandexgpt
 
-def _get_client() -> genai.Client | None:
-    global _client, _executor
-    if _client is None and settings.GEMINI_API_KEY:
-        _client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        logger.info("Gemini API настроен, модель: %s", settings.GEMINI_MODEL)
-    if _executor is None:
-        _executor = ThreadPoolExecutor(max_workers=1)
-    return _client
+_yandex_client: httpx.AsyncClient | None = None
+
+
+def _get_yandex_client() -> httpx.AsyncClient | None:
+    global _yandex_client
+    if _yandex_client is None and YANDEX_API_KEY and YANDEX_FOLDER_ID:
+        _yandex_client = httpx.AsyncClient(
+            base_url="https://llm.api.cloud.yandex.net/foundationModels/v1",
+            headers={
+                "Authorization": f"Api-Key {YANDEX_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            timeout=30.0,
+        )
+        logger.info("YandexGPT настроен, модель: %s, folder_id: %s", YANDEX_MODEL, YANDEX_FOLDER_ID[:10] + "...")
+    return _yandex_client
 
 
 SYSTEM_PROMPT = """Ты — Артём, фрилансер, который отвечает на заказы на Kwork. Пиши отклик как в реальном чате — живо, по-человечески, без шаблонов и формальностей.
@@ -51,11 +58,11 @@ SYSTEM_PROMPT = """Ты — Артём, фрилансер, который от�
 """
 
 
-def _generate_reply_sync(title: str, description: str, price: str = "") -> str:
-    """Синхронная генерация для выполнения в пуле потоков."""
-    client = _get_client()
+async def generate_reply(title: str, description: str, price: str = "") -> str:
+    """Генерация отклика через YandexGPT."""
+    client = _get_yandex_client()
     if client is None:
-        logger.error("GEMINI_API_KEY не настроен в переменных окружения")
+        logger.error("YANDEX_API_KEY или YANDEX_FOLDER_ID не настроены")
         return ""
 
     user_prompt = (
@@ -68,55 +75,49 @@ def _generate_reply_sync(title: str, description: str, price: str = "") -> str:
         "Максимум 7-8 предложений. Никаких тире, клише, английских слов, эмодзи."
     )
 
+    payload = {
+        "modelUri": f"gpt://{YANDEX_FOLDER_ID}/{YANDEX_MODEL}",
+        "completionOptions": {
+            "stream": False,
+            "temperature": 0.7,
+            "maxTokens": 1200,
+        },
+        "messages": [
+            {"role": "system", "text": SYSTEM_PROMPT},
+            {"role": "user", "text": user_prompt},
+        ],
+    }
+
     max_retries = 3
     base_delay = 2.0
 
     for i in range(max_retries):
         try:
-            logger.info("Вызываю Gemini API (попытка %d/%d)...", i + 1, max_retries)
-            response = client.models.generate_content(
-                model=settings.GEMINI_MODEL,
-                contents=[
-                    types.Content(role="user", parts=[types.Part(text=SYSTEM_PROMPT)]),
-                    types.Content(role="user", parts=[types.Part(text=user_prompt)]),
-                ],
-                config=types.GenerateContentConfig(
-                    temperature=0.7,
-                    max_output_tokens=1200,
-                ),
-            )
+            logger.info("Вызываю YandexGPT (попытка %d/%d)...", i + 1, max_retries)
+            response = await client.post("/completion", json=payload)
 
-            reply_text = response.text.strip() if response.text else ""
-            logger.info("Получен ответ от Gemini для заказа '%s': %d символов", title, len(reply_text))
+            if response.status_code != 200:
+                logger.error("YandexGPT error %d: %s", response.status_code, response.text)
+                if i < max_retries - 1:
+                    import asyncio
+                    await asyncio.sleep(base_delay)
+                continue
+
+            data = response.json()
+            reply_text = data.get("result", {}).get("alternatives", [{}])[0].get("message", {}).get("text", "").strip()
+
+            logger.info("Получен ответ от YandexGPT для заказа '%s': %d символов", title, len(reply_text))
 
             if reply_text:
                 return reply_text
             else:
-                logger.warning("Получен пустой ответ от Gemini (попытка %d/%d)", i + 1, max_retries)
+                logger.warning("Получен пустой ответ от YandexGPT (попытка %d/%d)", i + 1, max_retries)
 
         except Exception as e:
-            logger.error("Gemini API error (попытка %d/%d): %s", i + 1, max_retries, e)
+            logger.error("YandexGPT error (попытка %d/%d): %s", i + 1, max_retries, e)
             if i < max_retries - 1:
-                import time
-                logger.info("Ожидание %.1f секунд перед повторной попыткой", base_delay)
-                time.sleep(base_delay)
+                import asyncio
+                await asyncio.sleep(base_delay)
 
-    logger.error("Не удалось получить ответ от Gemini после %d попыток", max_retries)
+    logger.error("Не удалось получить ответ от YandexGPT после %d попыток", max_retries)
     return ""
-
-
-async def generate_reply(title: str, description: str, price: str = "") -> str:
-    """Асинхронная обёртка с таймаутом 30 секунд."""
-    try:
-        return await asyncio.wait_for(
-            asyncio.get_event_loop().run_in_executor(
-                _executor, _generate_reply_sync, title, description, price
-            ),
-            timeout=30.0
-        )
-    except asyncio.TimeoutError:
-        logger.error("Таймаут генерации отклика (>30 сек) для заказа: %s", title[:50])
-        return ""
-    except Exception as e:
-        logger.error("Ошибка генерации отклика: %s", e)
-        return ""
