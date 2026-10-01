@@ -17,7 +17,7 @@ SEEN_ORDER_MAX_AGE_DAYS = settings.SEEN_ORDER_MAX_AGE_DAYS
 _orders: dict[str, dict] = {}
 _cleanup_lock = asyncio.Lock()
 _last_cleanup = datetime.now(timezone.utc)
-_CLEANUP_INTERVAL_HOURS = 1  # Run cleanup at least once per hour
+_CLEANUP_INTERVAL_HOURS = 6  # Run cleanup every 6 hours
 
 
 def _cleanup_expired() -> None:
@@ -33,7 +33,6 @@ def _cleanup_expired() -> None:
     for order_id in expired:
         del _orders[order_id]
     if expired:
-        print(f"[storage] _cleanup_expired: удалено {len(expired)} заказов старше {SEEN_ORDER_TTL_HOURS}ч")
         logger.info("Удалено просмотренных заказов по TTL: %d", len(expired))
 
 
@@ -57,7 +56,6 @@ def _cleanup_if_needed() -> None:
     for order_id in to_remove:
         del _orders[order_id]
     if to_remove:
-        print(f"[storage] _cleanup_if_needed: удалено {len(to_remove)} заказов старше {SEEN_ORDER_MAX_AGE_DAYS}д")
         logger.info("Удалено старых заказов при превышении лимита %d: %d", MAX_SEEN_ORDERS, len(to_remove))
 
 
@@ -65,7 +63,7 @@ async def _periodic_cleanup() -> None:
     """Periodically clean up expired orders"""
     while True:
         try:
-            await asyncio.sleep(3600)  # Check every hour
+            await asyncio.sleep(_CLEANUP_INTERVAL_HOURS * 3600)
             async with _cleanup_lock:
                 _cleanup_expired()
         except Exception as e:
@@ -83,7 +81,7 @@ def init_db() -> None:
                     for order in data.get("orders", [])
                     if order.get("id")
                 }
-            print(f"[storage] init_db: загружено {len(_orders)} заказов из {SEEN_ORDERS_FILE}")
+            logger.info("init_db: загружено %d заказов из %s", len(_orders), SEEN_ORDERS_FILE)
             _cleanup_expired()
             _cleanup_if_needed()
             if len(_orders) > MAX_SEEN_ORDERS:
@@ -94,7 +92,7 @@ def init_db() -> None:
                 excess = len(_orders) - MAX_SEEN_ORDERS
                 for old_id, _ in sorted_by_seen[:excess]:
                     del _orders[old_id]
-                print(f"[storage] init_db: жёсткая очистка при загрузке, удалено {excess}, осталось {len(_orders)}")
+                logger.info("init_db: жёсткая очистка при загрузке, удалено %d, осталось %d", excess, len(_orders))
             _last_cleanup = datetime.now(timezone.utc)
             logger.info("Загружено просмотренных заказов: %d", len(_orders))
         except (json.JSONDecodeError, OSError) as e:
@@ -141,8 +139,7 @@ def save_order(order: dict) -> None:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump({"orders": list(_orders.values())}, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, SEEN_ORDERS_FILE)
-        logger.info("Сохранён заказ %s в %s", order_id, SEEN_ORDERS_FILE)
-        logger.info("Сохранено заказов: %d", len(_orders))
+        logger.debug("Сохранён заказ %s в %s (всего: %d)", order_id, SEEN_ORDERS_FILE, len(_orders))
         _cleanup_expired()
         _cleanup_if_needed()
         if len(_orders) > MAX_SEEN_ORDERS:
@@ -153,7 +150,7 @@ def save_order(order: dict) -> None:
             excess = len(_orders) - MAX_SEEN_ORDERS
             for old_id, _ in sorted_by_seen[:excess]:
                 del _orders[old_id]
-            print(f"[storage] жёсткая очистка: удалено {excess} самых старых заказов, осталось {len(_orders)}")
+            logger.info("Жёсткая очистка: удалено %d самых старых заказов, осталось %d", excess, len(_orders))
             tmp_path = SEEN_ORDERS_FILE + ".tmp"
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump({"orders": list(_orders.values())}, f, ensure_ascii=False, indent=2)
@@ -173,23 +170,20 @@ def get_all_seen_ids() -> set[str]:
 def clear_all_orders() -> None:
     global _orders
     _orders = {}
-    print(f"[storage] clear_all_orders: очищаю память и файл {SEEN_ORDERS_FILE}")
+    logger.info("clear_all_orders: очищаю память и файл %s", SEEN_ORDERS_FILE)
     if os.path.exists(SEEN_ORDERS_FILE):
         try:
             os.remove(SEEN_ORDERS_FILE)
-            print(f"[storage] clear_all_orders: файл {SEEN_ORDERS_FILE} удалён")
+            logger.info("clear_all_orders: файл %s удалён", SEEN_ORDERS_FILE)
         except OSError as e:
-            print(f"[storage] clear_all_orders: не удалось удалить {SEEN_ORDERS_FILE}: {e}")
-    print("[storage] clear_all_orders: все заказы из памяти очищены")
+            logger.error("clear_all_orders: не удалось удалить %s: %s", SEEN_ORDERS_FILE, e)
+    logger.info("clear_all_orders: все заказы из памяти очищены")
 
 
 def has_any_seen() -> bool:
     return bool(_orders)
 
 
-# Start periodic cleanup when module is imported
-# Note: In a real application, you'd want to manage this lifecycle better
-# For now, we'll start it when first used
 _cleanup_task: Optional[asyncio.Task] = None
 
 
@@ -199,5 +193,4 @@ def start_cleanup_task():
         try:
             _cleanup_task = asyncio.create_task(_periodic_cleanup())
         except RuntimeError:
-            # No running event loop, task will be started later
             pass

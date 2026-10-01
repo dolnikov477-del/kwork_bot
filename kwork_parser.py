@@ -77,8 +77,11 @@ _EXTRACT_JS = """
             }
         }
 
-        const publishedAt =
-            card.querySelector('time')?.getAttribute('datetime') || '';
+        let publishedAt = '';
+        const timeEl = card.querySelector('time');
+        if (timeEl) {
+            publishedAt = timeEl.getAttribute('datetime') || timeEl.getAttribute('title') || '';
+        }
 
         return {
             id: idMatch ? idMatch[1] : href,
@@ -101,8 +104,9 @@ async def _fetch_orders_for_category(page, category_id: str) -> list[dict]:
     url = f"{KWORK_BASE_URL}?fc={category_id}"
     logger.info("[parser] Перехожу на URL: %s", url)
     try:
-        await page.goto(url, wait_until="networkidle", timeout=settings.PAGE_LOAD_TIMEOUT)
-        await page.wait_for_timeout(1500)
+        await page.goto(url, wait_until="domcontentloaded", timeout=settings.PAGE_LOAD_TIMEOUT)
+        await page.wait_for_selector('.want-card', timeout=10000)
+        await page.wait_for_timeout(1000)
     except PlaywrightTimeoutError:
         logger.warning("[parser] Таймаут загрузки категории %s", category_id)
         return []
@@ -144,7 +148,7 @@ async def fetch_new_orders() -> AsyncGenerator[dict, None]:
     async with async_playwright() as p:
         browser = None
         max_launch_attempts = 3
-        launch_delay = 10.0
+        launch_delay = 5.0
 
         async def ensure_browser() -> bool:
             nonlocal browser
@@ -165,6 +169,14 @@ async def fetch_new_orders() -> AsyncGenerator[dict, None]:
                                 "--no-sandbox",
                                 "--disable-setuid-sandbox",
                                 "--disable-gpu",
+                                "--disable-extensions",
+                                "--disable-background-networking",
+                                "--disable-background-timer-throttling",
+                                "--disable-backgrounding-occluded-windows",
+                                "--disable-renderer-backgrounding",
+                                "--disable-features=TranslateUI,BlinkGenPropertyTrees",
+                                "--memory-pressure-off",
+                                "--max_old_space_size=256",
                             ],
                             env={
                                 "XDG_CONFIG_HOME": "/tmp",
@@ -192,12 +204,13 @@ async def fetch_new_orders() -> AsyncGenerator[dict, None]:
 
                 user_agent = random.choice(USER_AGENTS)
                 page = await browser.new_page(user_agent=user_agent)
+                page.set_default_timeout(15000)
 
                 try:
                     orders = await _fetch_orders_for_category(page, category_id)
                 except Exception as e:
                     logger.exception("Ошибка при обходе категории %s: %s", category_id, e)
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(3)
                     continue
 
                 sent_in_category = 0
@@ -249,4 +262,4 @@ async def fetch_new_orders() -> AsyncGenerator[dict, None]:
                     except Exception as e:
                         logger.error("Ошибка при закрытии страницы: %s", e)
 
-            await asyncio.sleep(5 + random.uniform(0, 3))
+            await asyncio.sleep(3 + random.uniform(0, 2))
