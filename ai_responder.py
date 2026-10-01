@@ -1,28 +1,22 @@
-from openai import OpenAI
-import httpx
 import os
+import logging
+
+from google import genai
+from google.genai import types
 
 from config import settings
-import logging
-import time
 
 logger = logging.getLogger(__name__)
 
-_http_client = None
-if settings.PROXY_URL:
-    _http_client = httpx.Client(proxy=settings.PROXY_URL)
-    logger.info("Используется прокси: %s", settings.PROXY_URL)
+_client: genai.Client | None = None
 
-_client = OpenAI(
-    api_key=os.getenv("GROQ_API_KEY"),
-    base_url=os.getenv("GROQ_BASE_URL", "https://openrouter.ai/api/v1"),
-    http_client=_http_client,
-)
-default_model = os.getenv("GROQ_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
-logger.info("AI client base_url: %s, model: %s", _client.base_url, default_model)
+if settings.GEMINI_API_KEY:
+    _client = genai.Client(api_key=settings.GEMINI_API_KEY)
+    logger.info("Gemini API настроен (новый SDK), модель: %s", settings.GEMINI_MODEL)
+else:
+    logger.warning("GEMINI_API_KEY не задан, генерация откликов не будет работать")
 
 
-# Системный промт для естественных откликов фрилансера
 SYSTEM_PROMPT = """Ты — Артём, фрилансер, который отвечает на заказы на Kwork. Пиши отклик как в реальном чате — живо, по-человечески, без шаблонов и формальностей.
 
 КЛЮЧЕВЫЕ ЭЛЕМЕНТЫ ОТКЛИКА (в естественной форме, не как список):
@@ -43,7 +37,7 @@ SYSTEM_PROMPT = """Ты — Артём, фрилансер, который от�
 — НИКОГДА не используй короткие тире (-) и длинные тире (–). Забудь про их существование.
 — НИКОГДА не используй эмодзи, звёздочки, markdown, нумерованные списки, жирный шрифт.
 — НИКОГДА не пиши клише: "качественно", "под ключ", "опытная команда", "гарантирую", "профессионально", "любой сложности", "сделаю в кратчайшие сроки", "выполню любой сложности".
-— НИКОГДА не используй английские слова: telegram → телеграм, wordpress → вордPRESS, api → интерфейс, bot → бот, web → сайт, deadline → дедлайн, feedback → фидбэк, design → дизайн (если можно по-русски — пиши по-русски).
+— НИКОГДА не используй английские слова: telegram → телеграм, wordpress → вордпресс, api → интерфейс, bot → бот, web → сайт, deadline → дедлайн, feedback → фидбэк, design → дизайн (если можно по-русски — пиши по-русски).
 — НЕ начинай с "Конечно", "Конечно, я", "Я бы хотел", "Я могу" — сразу приступай к сути после приветствия.
 — НЕ упоминай, что ты ИИ, нейросеть, модель или ассистент. Ты — обычный фрилансер Артём.
 — НЕ пиши длинные тексты. Максимум 7-8 предложений. Лучше 5-6.
@@ -52,6 +46,9 @@ SYSTEM_PROMPT = """Ты — Артём, фрилансер, который от�
 
 
 def generate_reply(title: str, description: str, price: str = "") -> str:
+    if _client is None:
+        logger.error("GEMINI_API_KEY не настроен")
+        return ""
 
     user_prompt = (
         f"Заголовок заказа: {title}\n"
@@ -63,38 +60,38 @@ def generate_reply(title: str, description: str, price: str = "") -> str:
         "Максимум 7-8 предложений. Никаких тире, клише, английских слов, эмодзи."
     )
 
-    models = [default_model, "meta-llama/llama-3.1-8b-instruct:free"]
     max_retries = 3
     base_delay = 2.0
 
-    for model_name in models:
-        for i in range(max_retries):
-            try:
-                logger.info("Вызываю OpenRouter с моделью '%s'... (попытка %d/%d)", model_name, i + 1, max_retries)
-                completion = _client.chat.completions.create(
-                    model=model_name,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
+    for i in range(max_retries):
+        try:
+            logger.info("Вызываю Gemini API (попытка %d/%d)...", i + 1, max_retries)
+            response = _client.models.generate_content(
+                model=settings.GEMINI_MODEL,
+                contents=[
+                    types.Content(role="user", parts=[types.Part(text=SYSTEM_PROMPT)]),
+                    types.Content(role="user", parts=[types.Part(text=user_prompt)]),
+                ],
+                config=types.GenerateContentConfig(
                     temperature=0.7,
-                    max_tokens=1200,
-                    timeout=30.0,
-                )
+                    max_output_tokens=1200,
+                ),
+            )
 
-                reply_text = completion.choices[0].message.content.strip()
-                logger.info("Получен ответ от AI для заказа '%s': %d символов", title, len(reply_text))
+            reply_text = response.text.strip() if response.text else ""
+            logger.info("Получен ответ от Gemini для заказа '%s': %d символов", title, len(reply_text))
 
-                if reply_text:
-                    return reply_text
-                else:
-                    logger.warning("Получен пустой ответ от AI (попытка %d/%d)", i + 1, max_retries)
+            if reply_text:
+                return reply_text
+            else:
+                logger.warning("Получен пустой ответ от Gemini (попытка %d/%d)", i + 1, max_retries)
 
-            except Exception as e:
-                logger.error("OpenRouter error с моделью '%s' (попытка %d/%d): %s", model_name, i + 1, max_retries, e)
-                if i < max_retries - 1:
-                    logger.info("Ожидание %.1f секунд перед повторной попыткой", base_delay)
-                    time.sleep(base_delay)
+        except Exception as e:
+            logger.error("Gemini API error (попытка %d/%d): %s", i + 1, max_retries, e)
+            if i < max_retries - 1:
+                import time
+                logger.info("Ожидание %.1f секунд перед повторной попыткой", base_delay)
+                time.sleep(base_delay)
 
-    logger.error("Не удалось получить ответ от AI после %d попыток по всем моделям", max_retries)
+    logger.error("Не удалось получить ответ от Gemini после %d попыток", max_retries)
     return ""

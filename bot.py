@@ -17,9 +17,10 @@ from aiogram.types import (
 from ai_responder import generate_reply
 from config import settings
 from kwork_parser import fetch_new_orders
-from storage import get_order, init_db, save_order, is_seen, clear_all_orders
+from storage import get_order, init_db, save_order, is_seen
 
 logger = logging.getLogger(__name__)
+
 
 async def safe_send_message(bot: Bot, chat_id: int | str, text: str, **kwargs):
     try:
@@ -53,6 +54,7 @@ def retry_on_network_error(max_retries: int = 3, delay: float = 2.0):
             raise last_exc
         return wrapper
     return decorator
+
 
 bot = Bot(
     token=settings.TELEGRAM_BOT_TOKEN,
@@ -131,8 +133,8 @@ async def on_generate_reply(callback: CallbackQuery) -> None:
             )
         except Exception as e:
             logger.error("Ошибка генерации отклика (попытка %d/%d): %s", i + 1, max_retries, e)
-            if i < max_retries - 1:  # Don't sleep on last attempt
-                await asyncio.sleep(base_delay * (2 ** i))  # Exponential backoff
+            if i < max_retries - 1:
+                await asyncio.sleep(base_delay * (2 ** i))
             continue
 
         if reply_text and reply_text.strip():
@@ -181,12 +183,11 @@ async def notify_new_order(order: dict) -> None:
 
 
 async def polling_loop() -> None:
-    clear_all_orders()
-    init_db()
+    """Основной цикл парсинга: стримит заказы и шлёт их сразу по мере появления."""
+    logger.info("Запуск цикла парсинга с интервалом %d сек", settings.POLL_INTERVAL)
     while True:
         try:
-            new_orders = await fetch_new_orders()
-            for order in new_orders:
+            async for order in fetch_new_orders():
                 order_id = order.get("id")
                 if order_id and is_seen(order_id):
                     logger.debug("Пропуск заказа %s: уже в памяти", order_id)
@@ -194,16 +195,16 @@ async def polling_loop() -> None:
                 try:
                     await notify_new_order(order)
                 except Exception as e:
-                    print(f"[polling_loop] Ошибка при отправке заказа {order.get('id')}: {e}")
+                    logger.error("Ошибка при отправке заказа %s: %s", order.get('id'), e)
         except Exception as e:
-            print(f"[polling_loop] Ошибка: {e}")
+            logger.exception("Ошибка в цикле парсинга: %s", e)
 
+        logger.debug("Ожидание %d секунд до следующего цикла", settings.POLL_INTERVAL)
         await asyncio.sleep(settings.POLL_INTERVAL)
 
 
 @retry_on_network_error(max_retries=5, delay=3.0)
 async def run() -> None:
-    # Start background cleanup task
     from storage import start_cleanup_task
     start_cleanup_task()
     await asyncio.gather(

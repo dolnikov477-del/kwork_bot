@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import random
+import re
 from datetime import datetime, timezone
+from typing import AsyncGenerator
+
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 from config import settings
@@ -18,7 +20,6 @@ logger = logging.getLogger(__name__)
 
 KWORK_BASE_URL = "https://kwork.ru/projects"
 
-# Rotate user agents to avoid detection
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -34,20 +35,19 @@ def _parse_replies_count(text: str) -> int:
     return int(match.group(1)) if match else 0
 
 
-def _is_too_old(published_at: str, max_age_hours: int = settings.MAX_AGE_HOURS) -> bool:
+def _is_too_old(published_at: str, max_age_hours: float = settings.MAX_AGE_HOURS) -> bool:
     if not published_at:
         return False
     try:
-        # Handle various ISO format variations
         normalized = published_at.replace("Z", "+00:00")
         if "+00:00" not in normalized and "Z" not in normalized:
-            normalized += "+00:00"  # Assume UTC if no timezone
+            normalized += "+00:00"
         dt = datetime.fromisoformat(normalized)
         now = datetime.now(timezone.utc)
         return (now - dt).total_seconds() > max_age_hours * 3600
     except Exception as e:
         logger.debug("Не удалось распарсить дату '%s': %s", published_at, e)
-        return False  # If we can't parse date, don't filter by age
+        return False
 
 
 _EXTRACT_JS = """
@@ -67,7 +67,6 @@ _EXTRACT_JS = """
         const price =
             card.querySelector('.wants-card__right')?.innerText?.trim() || '';
 
-        // Kwork изменил структуру: количество откликов теперь в span с текстом "Предложений: N"
         let repliesText = '';
         const repliesSpans = card.querySelectorAll('span');
         for (const span of repliesSpans) {
@@ -96,17 +95,25 @@ _EXTRACT_JS = """
 }
 """
 
-async def fetch_orders_for_category(page, category_id: str) -> list[dict]:
-    """Переходит на страницу категории в уже открытой вкладке и возвращает заказы."""
+
+async def _fetch_orders_for_category(page, category_id: str) -> list[dict]:
+    """Переходит на страницу категории и возвращает заказы."""
     url = f"{KWORK_BASE_URL}?fc={category_id}"
     logger.info("[parser] Перехожу на URL: %s", url)
-    await page.goto(url, wait_until="networkidle", timeout=30000)
-    await page.wait_for_timeout(1500)
-    
+    try:
+        await page.goto(url, wait_until="networkidle", timeout=settings.PAGE_LOAD_TIMEOUT)
+        await page.wait_for_timeout(1500)
+    except PlaywrightTimeoutError:
+        logger.warning("[parser] Таймаут загрузки категории %s", category_id)
+        return []
+    except Exception as e:
+        logger.exception("[parser] Ошибка при переходе на категорию %s: %s", category_id, e)
+        return []
+
     logger.info("[parser] Ищу карточки заказов на странице категории %s...", category_id)
     card_count_raw = await page.evaluate("() => document.querySelectorAll('.want-card').length")
     logger.info("[parser] Категория %s: найдено сырых карточек .want-card: %d", category_id, card_count_raw)
-    
+
     orders = await page.evaluate(_EXTRACT_JS)
 
     logger.info("[parser] Категория %s: распарсено заказов: %d", category_id, len(orders))
@@ -120,21 +127,20 @@ async def fetch_orders_for_category(page, category_id: str) -> list[dict]:
     if not orders:
         title = await page.title()
         body_snippet = await page.evaluate("() => document.body.innerText.slice(0, 300)")
-        print(
-            f"[parser][debug] fc={category_id} | title='{title}' | "
-            f".want-card найдено сырых: {card_count_raw} | "
-            f"начало текста страницы: {body_snippet!r}"
+        logger.debug(
+            "[parser][debug] fc=%s | title='%s' | .want-card найдено сырых: %d | начало текста: %r",
+            category_id, title, card_count_raw, body_snippet
         )
 
     return orders
 
 
-async def fetch_new_orders() -> list[dict]:
+async def fetch_new_orders() -> AsyncGenerator[dict, None]:
     """
-    Получает заказы из настроенных категорий и возвращает список новых заказов.
+    Асинхронный генератор: выдаёт новые заказы по мере обнаружения.
+    Проходит категории последовательно, внутри категории — по заказам.
+    Фильтрует старые, забитые и уже отправленные заказы на лету.
     """
-    new_orders: list[dict] = []
-
     async with async_playwright() as p:
         browser = None
         max_launch_attempts = 3
@@ -176,37 +182,21 @@ async def fetch_new_orders() -> list[dict]:
             return True
 
         if not await ensure_browser():
-            return new_orders
+            return
 
         for category_id in settings.KWORK_CATEGORY_IDS:
             page = None
-            cycle_full = False
             try:
                 if not await ensure_browser():
-                    break
-
-                if len(new_orders) >= settings.MAX_ORDERS_PER_CYCLE:
-                    cycle_full = True
                     break
 
                 user_agent = random.choice(USER_AGENTS)
                 page = await browser.new_page(user_agent=user_agent)
 
                 try:
-                    orders = await fetch_orders_for_category(page, category_id)
-
-                    logger.info(
-                        "Категория %s: найдено заказов: %s",
-                        category_id,
-                        len(orders),
-                    )
-
+                    orders = await _fetch_orders_for_category(page, category_id)
                 except Exception as e:
-                    logger.exception(
-                        "Ошибка при обходе категории %s: %s",
-                        category_id,
-                        e,
-                    )
+                    logger.exception("Ошибка при обходе категории %s: %s", category_id, e)
                     await asyncio.sleep(5)
                     continue
 
@@ -214,7 +204,6 @@ async def fetch_new_orders() -> list[dict]:
 
                 for order in orders:
                     order_id = order.get("id")
-
                     if not order_id:
                         continue
 
@@ -230,37 +219,26 @@ async def fetch_new_orders() -> list[dict]:
                     if replies_count > settings.MAX_REPLIES:
                         logger.info(
                             "Пропуск заказа %s: откликов %d > %d",
-                            order_id,
-                            replies_count,
-                            settings.MAX_REPLIES,
+                            order_id, replies_count, settings.MAX_REPLIES
                         )
                         continue
 
                     if _is_too_old(order.get("publishedAt", "")):
                         logger.info(
-                            "Пропуск заказа %s: заказ старше %d часов",
-                            order_id,
-                            settings.MAX_AGE_HOURS,
+                            "Пропуск заказа %s: заказ старше %.1f часов",
+                            order_id, settings.MAX_AGE_HOURS
                         )
                         continue
 
-                    if len(new_orders) >= settings.MAX_ORDERS_PER_CYCLE:
-                        logger.info(
-                            "Достигнут общий лимит заказов за цикл: %d",
-                            settings.MAX_ORDERS_PER_CYCLE,
-                        )
-                        cycle_full = True
-                        break
-
-                    new_orders.append(order)
-                    sent_in_category += 1
                     if sent_in_category >= settings.MAX_ORDERS_PER_CATEGORY:
                         logger.info(
                             "Достигнут лимит заказов для категории %s: %d",
-                            category_id,
-                            settings.MAX_ORDERS_PER_CATEGORY,
+                            category_id, settings.MAX_ORDERS_PER_CATEGORY
                         )
                         break
+
+                    sent_in_category += 1
+                    yield order
 
             except Exception as e:
                 logger.exception("Критическая ошибка в парсере для категории %s: %s", category_id, e)
@@ -271,9 +249,4 @@ async def fetch_new_orders() -> list[dict]:
                     except Exception as e:
                         logger.error("Ошибка при закрытии страницы: %s", e)
 
-            if cycle_full:
-                break
-
-            await asyncio.sleep(8 + random.uniform(0, 4))
-
-    return new_orders
+            await asyncio.sleep(5 + random.uniform(0, 3))
