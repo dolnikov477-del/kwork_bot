@@ -1,33 +1,41 @@
 import os
 import logging
-import httpx
-import json
 
 from config import settings
 
 logger = logging.getLogger(__name__)
 
-# YandexGPT configuration
-YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID", "")
-YANDEX_API_KEY = os.getenv("YANDEX_API_KEY", "")
-YANDEX_MODEL = os.getenv("YANDEX_MODEL", "yandexgpt-lite")  # или yandexgpt
+# Проверяем, включён ли ИИ
+USE_AI = os.getenv("USE_AI", "false").lower() == "true"
 
-_yandex_client: httpx.AsyncClient | None = None
-
-
-def _get_yandex_client() -> httpx.AsyncClient | None:
-    global _yandex_client
-    if _yandex_client is None and YANDEX_API_KEY and YANDEX_FOLDER_ID:
-        _yandex_client = httpx.AsyncClient(
-            base_url="https://llm.api.cloud.yandex.net/foundationModels/v1",
-            headers={
-                "Authorization": f"Api-Key {YANDEX_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            timeout=30.0,
-        )
-        logger.info("YandexGPT настроен, модель: %s, folder_id: %s", YANDEX_MODEL, YANDEX_FOLDER_ID[:10] + "...")
-    return _yandex_client
+# Если ИИ включён — пробуем подключить Gemini
+if USE_AI:
+    try:
+        from google import genai
+        from google.genai import types
+        
+        GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+        GEMINI_PROXY_URL = os.getenv("GEMINI_PROXY_URL", "")  # Cloudflare Worker URL
+        
+        if GEMINI_API_KEY:
+            if GEMINI_PROXY_URL:
+                _client = genai.Client(
+                    api_key=GEMINI_API_KEY,
+                    http_options=types.HttpOptions(base_url=GEMINI_PROXY_URL)
+                )
+                logger.info("Gemini API настроен через прокси: %s", GEMINI_PROXY_URL)
+            else:
+                _client = genai.Client(api_key=GEMINI_API_KEY)
+                logger.info("Gemini API настроен (прямой доступ, нужен VPN)")
+        else:
+            _client = None
+            logger.warning("USE_AI=true, но GEMINI_API_KEY не задан")
+    except ImportError:
+        _client = None
+        logger.warning("google-genai не установлен, ИИ отключён")
+else:
+    _client = None
+    logger.info("ИИ отключён (USE_AI=false). Используются шаблоны.")
 
 
 SYSTEM_PROMPT = """Ты — Артём, фрилансер, который отвечает на заказы на Kwork. Пиши отклик как в реальном чате — живо, по-человечески, без шаблонов и формальностей.
@@ -42,7 +50,7 @@ SYSTEM_PROMPT = """Ты — Артём, фрилансер, который от�
 — Задай уточняющий вопрос, если в заказе есть неясность (язык, стиль, deadline, бюджет, правки и т.п.).
 — Заверши естественно, без клише вроде "ожидание вашего ответа".
 
-ПРИМЕР ХОРОШЕГО ОТКЛИКА (на основе реального заказа на анимацию):
+ПРИМЕР ХОРОШЕГО ОТКЛИКА:
 "Здравствуйте! Готов сделать короткий анимационный мультфильм примерно на минуту по вашему сценарию. Пропишу логику сцен и переходов, сделаю анимацию персонажей и объектов в нужном стиле, добавлю озвучку и монтаж. Важно, чтобы ролик не просто выглядел красиво, а хорошо передавал сюжет и легко воспринимался зрителем. Есть опыт создания рекламных роликов и обучающих видео, поэтому могу подобрать подходящий темп, визуальный стиль и подачу под вашу задачу. Подскажите, пожалуйста, в каком стиле лучше сделать анимацию — 2d или 3d?"
 
 СТРОГО ЗАПРЕЩЕНО:
@@ -58,66 +66,113 @@ SYSTEM_PROMPT = """Ты — Артём, фрилансер, который от�
 """
 
 
+# Умные шаблоны (работают без ИИ)
+TEMPLATES = {
+    "default": (
+        "Здравствуйте! Меня зовут Артём. Готов взяться за ваш заказ \"{title}\". "
+        "Изучил описание, понимаю задачу. Могу сделать: разберу требования, предложу решение, "
+        "реализую качественно и в срок. Есть опыт похожих задач. "
+        "Подскажите, есть ли ТЗ или макеты? Какой срок и бюджет планируете?"
+    ),
+    "web": (
+        "Здравствуйте! Артём, веб-разработчик. Вижу заказ \"{title}\" — готов сделать. "
+        "Могу: верстка, бэкенд, API, админка, интеграции, деплой. Стек: Python/FastAPI/Django, JS/React/Vue, БД PostgreSQL/MySQL. "
+        "Есть опыт подобных проектов. Пришлите ТЗ или опишите задачу подробнее — обсудим сроки и бюджет."
+    ),
+    "bot": (
+        "Здравствуйте! Артём, делаю ботов и автоматизацию. Заказ \"{title}\" — в теме. "
+        "Могу: Telegram-боты, вебхуки, FSM, платежи, парсинг, интеграции с CRM/API. "
+        "Пишу на Python (aiogram). Есть готовые решения. Напишите детали — обсудим срок и стоимость."
+    ),
+    "design": (
+        "Здравствуйте! Артём, дизайнер. Заказ \"{title}\" заинтересовал. "
+        "Могу: UI/UX, макеты, прототипы, баннеры, презентации, айдентика. Инструменты: Figma. "
+        "Есть портфолио. Пришлите референсы или опишите видение — обсудим."
+    ),
+    "text": (
+        "Здравствуйте! Артём, пишу тексты. Заказ \"{title}\" — могу выполнить. "
+        "Пишу: статьи, SEO, карточки товаров, письма, посты. Без воды, по делу, в срок. "
+        "Пришлите тему и требования — сделаю образец."
+    ),
+    "parsing": (
+        "Здравствуйте! Артём, парсинг и сбор данных. Заказ \"{title}\" — в работе. "
+        "Могу: парсинг сайтов, API, структурирование данных, экспорт в CSV/Excel/JSON/БД. "
+        "Обхожу защиту, работаю быстро. Пришлите источник и формат результата — оценю срок."
+    ),
+}
+
+
+def _pick_template(title: str, description: str) -> str:
+    """Выбирает шаблон по ключевым словам в заголовке/описании."""
+    text = f"{title} {description}".lower()
+    
+    if any(w in text for w in ["бот", "bot", "телеграм", "telegram", "автоматизац", "парсинг", "parser", "скрипт", "script"]):
+        return TEMPLATES["bot"]
+    if any(w in text for w in ["сайт", "веб", "web", "верстка", "frontend", "backend", "бэкенд", "django", "fastapi", "react", "vue", "landing", "лендинг", "интернет-магазин"]):
+        return TEMPLATES["web"]
+    if any(w in text for w in ["дизайн", "design", "ui", "ux", "фигма", "figma", "макет", "баннер", "логотип", "бренд", "презентац"]):
+        return TEMPLATES["design"]
+    if any(w in text for w in ["текст", "статья", "seo", "контент", "копирайт", "описа", "пост", "карточк"]):
+        return TEMPLATES["text"]
+    if any(w in text for w in ["парсинг", "parser", "сбор данных", "скрапинг", "scraping", "выгрузк"]):
+        return TEMPLATES["parsing"]
+    
+    return TEMPLATES["default"]
+
+
+def _format_reply(template: str, title: str, price: str = "") -> str:
+    """Подставляет переменные в шаблон."""
+    reply = template.format(title=title)
+    if price:
+        reply += f" Бюджет: {price}."
+    return reply
+
+
 async def generate_reply(title: str, description: str, price: str = "") -> str:
-    """Генерация отклика через YandexGPT."""
-    client = _get_yandex_client()
-    if client is None:
-        logger.error("YANDEX_API_KEY или YANDEX_FOLDER_ID не настроены")
-        return ""
+    """Главная функция: пробует ИИ, если не вышло — шаблон."""
+    
+    # 1. Пробуем ИИ (если включено)
+    if _client is not None:
+        user_prompt = (
+            f"Заголовок заказа: {title}\n"
+            f"Описание: {description}\n"
+            f"Бюджет: {price or 'не указан'}\n\n"
+            "Напиши естественный отклик от имени фрилансера Артёма на этот заказ. "
+            "Используй пример из системного промта как образец стиля и структуры. "
+            "Пиши как в реальном чате: живо, по-человечески, без шаблонов и формальностей. "
+            "Максимум 7-8 предложений. Никаких тире, клише, английских слов, эмодзи."
+        )
 
-    user_prompt = (
-        f"Заголовок заказа: {title}\n"
-        f"Описание: {description}\n"
-        f"Бюджет: {price or 'не указан'}\n\n"
-        "Напиши естественный отклик от имени фрилансера Артёма на этот заказ. "
-        "Используй пример из системного промта как образец стиля и структуры. "
-        "Пиши как в реальном чате: живо, по-человечески, без шаблонов и формальностей. "
-        "Максимум 7-8 предложений. Никаких тире, клише, английских слов, эмодзи."
-    )
+        for attempt in range(3):
+            try:
+                logger.info("Вызываю Gemini API (попытка %d/3)...", attempt + 1)
+                response = _client.models.generate_content(
+                    model="gemini-1.5-flash",
+                    contents=[
+                        types.Content(role="user", parts=[types.Part(text=SYSTEM_PROMPT)]),
+                        types.Content(role="user", parts=[types.Part(text=user_prompt)]),
+                    ],
+                    config=types.GenerateContentConfig(
+                        temperature=0.7,
+                        max_output_tokens=1200,
+                    ),
+                )
 
-    payload = {
-        "modelUri": f"gpt://{YANDEX_FOLDER_ID}/{YANDEX_MODEL}",
-        "completionOptions": {
-            "stream": False,
-            "temperature": 0.7,
-            "maxTokens": 1200,
-        },
-        "messages": [
-            {"role": "system", "text": SYSTEM_PROMPT},
-            {"role": "user", "text": user_prompt},
-        ],
-    }
-
-    max_retries = 3
-    base_delay = 2.0
-
-    for i in range(max_retries):
-        try:
-            logger.info("Вызываю YandexGPT (попытка %d/%d)...", i + 1, max_retries)
-            response = await client.post("/completion", json=payload)
-
-            if response.status_code != 200:
-                logger.error("YandexGPT error %d: %s", response.status_code, response.text)
-                if i < max_retries - 1:
-                    import asyncio
-                    await asyncio.sleep(base_delay)
-                continue
-
-            data = response.json()
-            reply_text = data.get("result", {}).get("alternatives", [{}])[0].get("message", {}).get("text", "").strip()
-
-            logger.info("Получен ответ от YandexGPT для заказа '%s': %d символов", title, len(reply_text))
-
-            if reply_text:
-                return reply_text
-            else:
-                logger.warning("Получен пустой ответ от YandexGPT (попытка %d/%d)", i + 1, max_retries)
-
-        except Exception as e:
-            logger.error("YandexGPT error (попытка %d/%d): %s", i + 1, max_retries, e)
-            if i < max_retries - 1:
+                reply_text = response.text.strip() if response.text else ""
+                
+                if reply_text:
+                    logger.info("Gemini ответил: %d символов", len(reply_text))
+                    return reply_text
+                    
+            except Exception as e:
+                logger.warning("Gemini ошибка (попытка %d/3): %s", attempt + 1, e)
                 import asyncio
-                await asyncio.sleep(base_delay)
+                await asyncio.sleep(2)
+        
+        logger.warning("Gemini не ответил, переключаюсь на шаблоны")
 
-    logger.error("Не удалось получить ответ от YandexGPT после %d попыток", max_retries)
-    return ""
+    # 2. Фоллбэк — умные шаблоны (всегда работают мгновенно)
+    template = _pick_template(title, description)
+    reply = _format_reply(template, title, price)
+    logger.info("Использован шаблон: %s символов", len(reply))
+    return reply

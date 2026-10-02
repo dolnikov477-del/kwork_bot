@@ -14,14 +14,16 @@ class Settings:
 
     TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
 
-    # YandexGPT (рекомендуется для РФ)
+    # ИИ настройки
+    USE_AI: bool = os.getenv("USE_AI", "false").lower() == "true"
+    GEMINI_PROXY_URL: str = os.getenv("GEMINI_PROXY_URL", "")  # Cloudflare Worker URL для обхода блокировки в РФ
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+
+    # YandexGPT (альтернатива для РФ)
     YANDEX_API_KEY: str = os.getenv("YANDEX_API_KEY", "")
     YANDEX_FOLDER_ID: str = os.getenv("YANDEX_FOLDER_ID", "")
     YANDEX_MODEL: str = os.getenv("YANDEX_MODEL", "yandexgpt-lite")
-
-    # Gemini API (запасной вариант, требует VPN в РФ)
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-1.5-flash-latest")
 
     category_ids_str = os.getenv("KWORK_CATEGORY_IDS", "")
     category_ids = [int(cat.strip()) for cat in category_ids_str.split(",") if cat.strip()]
