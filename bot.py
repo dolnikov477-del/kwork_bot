@@ -88,12 +88,10 @@ def _format_order_message(order: dict, reply_text: str = "", source: str = "") -
     if description:
         parts.append(f"📝 {description}")
 
-    if reply_text:
+    if reply_text and source == "ai":
         parts.append("─" * 30)
-        parts.append(f"🤖 <b>Отклик ({'ИИ' if source == 'ai' else 'шаблон'})</b>:")
+        parts.append(f"🤖 <b>Отклик (ИИ)</b>:")
         parts.append(reply_text)
-        if source == "fallback_template":
-            parts.append("\n⚠️ <b>ИИ недоступен, подставлен шаблонный отклик.</b> Проверь и поправь перед отправкой.")
 
     return "\n\n".join(parts)
 
@@ -161,13 +159,27 @@ async def on_generate_reply(callback: CallbackQuery) -> None:
     logger.info("Длина %s-отклика для заказа %s: %d символов", source, order_id, len(reply_text))
 
     try:
-        # Формируем сообщение с заказом и откликом
-        full_message = _format_order_message(order, reply_text, source)
-        parts = _split_message(full_message, max_len=4000)
-        for part in parts:
+        # Сначала отправляем сообщение с заказом
+        order_message = _format_order_message(order)
+        await callback.message.answer(
+            order_message,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        
+        # Затем отправляем отклик отдельным сообщением
+        if source == "ai":
+            # Для ИИ добавляем пометку
             await callback.message.answer(
-                part,
+                f"🤖 <b>Отклик (ИИ)</b>:\n\n{reply_text}",
                 parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+        else:
+            # Для fallback — чистое сообщение как от человека
+            await callback.message.answer(
+                reply_text,
+                parse_mode=None,
                 disable_web_page_preview=True,
             )
     except Exception as e:
