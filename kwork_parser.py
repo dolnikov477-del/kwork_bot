@@ -53,37 +53,115 @@ def _is_too_old(published_at: str, max_age_hours: float = settings.MAX_AGE_HOURS
         return False
 
 
+# Улучшенный JS с множественными fallback селекторами
 _EXTRACT_JS = """
 () => {
-    const cards = Array.from(document.querySelectorAll('.want-card'));
+    // Множественные селекторы для карточек
+    const cardSelectors = [
+        '.want-card',
+        '.card',
+        '[data-want-id]',
+        '.project-card',
+        '.order-card',
+        '.wants-card',
+        '.js-want-card',
+        '.js-project-card',
+        '.project-item',
+        '.order-item',
+        '.task-card'
+    ];
+    
+    let cards = [];
+    for (const sel of cardSelectors) {
+        const found = Array.from(document.querySelectorAll(sel));
+        if (found.length > 0) {
+            cards = found;
+            break;
+        }
+    }
+    if (cards.length === 0) {
+        // Фоллбек: ищем любые ссылки на /projects/
+        const links = Array.from(document.querySelectorAll('a[href*="/projects/"]'));
+        cards = links.map(l => l.closest('div, article, section, li') || l.parentElement).filter(Boolean);
+    }
 
     return cards.map(card => {
-        const link = card.querySelector('.wants-card__header-title a[href*="/projects/"]');
+        // Пробуем разные селекторы для ссылки
+        let link = card.querySelector('.wants-card__header-title a[href*="/projects/"]');
+        if (!link) link = card.querySelector('a[href*="/projects/"]');
+        if (!link) link = card.querySelector('h3 a, h4 a, .title a, .name a');
         const href = link ? link.getAttribute('href') : null;
 
         const idMatch = href ? href.match(/projects\\/(\\d+)/) : null;
 
-        const title = link?.innerText?.trim() || '';
-        const description =
-            card.querySelector('.wants-card__description-text')?.innerText?.trim() || '';
+        // Заголовок
+        let title = '';
+        if (link) title = link.innerText?.trim() || '';
+        if (!title) {
+            const titleEl = card.querySelector('h3, h4, .title, .name, .wants-card__header-title, [class*="title"]');
+            title = titleEl?.innerText?.trim() || '';
+        }
 
-        const price =
-            card.querySelector('.wants-card__right')?.innerText?.trim() || '';
-
-        let repliesText = '';
-        const repliesSpans = card.querySelectorAll('span');
-        for (const span of repliesSpans) {
-            const txt = span.innerText || '';
-            if (txt.includes('Предложений')) {
-                repliesText = txt.trim();
+        // Описание - пробуем разные селекторы
+        let description = '';
+        const descSelectors = [
+            '.wants-card__description-text',
+            '.description',
+            '.description-text',
+            '[class*="description"]',
+            'p'
+        ];
+        for (const sel of descSelectors) {
+            const el = card.querySelector(sel);
+            if (el && el.innerText?.trim()) {
+                description = el.innerText.trim();
                 break;
             }
         }
 
+        // Цена
+        let price = '';
+        const priceSelectors = [
+            '.wants-card__right',
+            '.price',
+            '.cost',
+            '[class*="price"]',
+            '[class*="cost"]'
+        ];
+        for (const sel of priceSelectors) {
+            const el = card.querySelector(sel);
+            if (el && el.innerText?.trim()) {
+                price = el.innerText.trim();
+                break;
+            }
+        }
+
+        // Отклики - ищем в тексте карточки
+        let repliesText = '';
+        const allText = card.innerText || '';
+        const repliesMatch = allText.match(/Предложений\\s*:?\\s*(\\d+)/);
+        if (repliesMatch) {
+            repliesText = 'Предложений: ' + repliesMatch[1];
+        } else {
+            const spans = card.querySelectorAll('span, div, p');
+            for (const span of spans) {
+                const txt = span.innerText || '';
+                if (txt.includes('Предложений')) {
+                    repliesText = txt.trim();
+                    break;
+                }
+            }
+        }
+
+        // Дата
         let publishedAt = '';
         const timeEl = card.querySelector('time');
         if (timeEl) {
             publishedAt = timeEl.getAttribute('datetime') || timeEl.getAttribute('title') || '';
+        }
+        if (!publishedAt) {
+            const timeMatch = allText.match(/(\\d{1,2}\\.\\d{1,2}\\.\\d{4})/);
+            if (timeMatch) publishedAt = timeMatch[1];
         }
 
         return {
@@ -101,38 +179,98 @@ _EXTRACT_JS = """
 }
 """
 
+_shutdown_event = asyncio.Event()
+
+
+def _parse_replies_count(text: str) -> int:
+    if not text:
+        return 0
+    match = re.search(r"(\d+)", text)
+    return int(match.group(1)) if match else 0
+
+
+def _is_too_old(published_at: str, max_age_hours: float = settings.MAX_AGE_HOURS) -> bool:
+    if not published_at:
+        return False
+    try:
+        normalized = published_at.replace("Z", "+00:00")
+        if "+00:00" not in normalized and "Z" not in normalized:
+            normalized += "+00:00"
+        dt = datetime.fromisoformat(normalized)
+        now = datetime.now(timezone.utc)
+        return (now - dt).total_seconds() > max_age_hours * 3600
+    except Exception as e:
+        logger.debug("Не удалось распарсить дату '%s': %s", published_at, e)
+        return False
+
+
+_shutdown_event = asyncio.Event()
+
 
 async def _fetch_orders_for_category(page, category_id: str) -> list[dict]:
-    """Переходит на страницу категории и возвращает заказы. При таймауте делает 1 повторную попытку."""
+    """Переходит на страницу категории и возвращает заказы. 3 попытки с увеличенными таймаутами."""
     url = f"{KWORK_BASE_URL}?fc={category_id}"
     logger.info("[parser] Перехожу на URL: %s", url)
 
-    # Повторная попытка при таймауте (макс 2 попытки всего)
-    for attempt in range(1, 3):
+    timeout = getattr(settings, 'PAGE_LOAD_TIMEOUT', 60000)
+
+    for attempt in range(1, 4):
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=settings.PAGE_LOAD_TIMEOUT)
-            await page.wait_for_selector('.want-card', timeout=10000)
-            await page.wait_for_timeout(1000)
-            break  # Успешно загрузили
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            # Ждём любой из возможных селекторов
+            await page.wait_for_selector(
+                '.want-card, .card, [data-want-id], .project-card, .order-card, .wants-card, .js-want-card, .project-item, .order-item, .task-card, a[href*="/projects/"]',
+                timeout=20000
+            )
+            await page.wait_for_timeout(3000)
+            break
         except PlaywrightTimeoutError:
-            logger.warning("[parser] Таймаут загрузки категории %s (попытка %d/2)", category_id, attempt)
-            if attempt == 1:
-                # Перезагружаем страницу перед повторной попыткой
+            logger.warning("[parser] Таймаут загрузки категории %s (попытка %d/3)", category_id, attempt)
+            if attempt < 3:
                 try:
-                    await page.reload(wait_until="domcontentloaded", timeout=settings.PAGE_LOAD_TIMEOUT)
+                    await page.reload(wait_until="domcontentloaded", timeout=60000)
+                    await page.wait_for_timeout(5000)
                 except Exception:
                     pass
                 continue
             else:
-                logger.error("[parser] Таймаут загрузки категории %s после 2 попыток", category_id)
+                logger.error("[parser] Таймаут загрузки категории %s после 3 попыток", category_id)
+                try:
+                    html = await page.content()
+                    title = await page.title()
+                    logger.error("[parser][debug] HTML category %s | title: %s | len: %d", category_id, title, len(html))
+                    logger.debug("[parser][debug] HTML (first 5000): %s", html[:5000])
+                except Exception:
+                    pass
                 return []
         except Exception as e:
             logger.exception("[parser] Ошибка при переходе на категорию %s: %s", category_id, e)
             return []
 
     logger.info("[parser] Ищу карточки заказов на странице категории %s...", category_id)
-    card_count_raw = await page.evaluate("() => document.querySelectorAll('.want-card').length")
-    logger.info("[parser] Категория %s: найдено сырых карточек .want-card: %d", category_id, card_count_raw)
+    
+    # Пробуем разные селекторы для подсчёта карточек
+    card_count_raw = await page.evaluate("""
+        () => {
+            const selectors = ['.want-card', '.card', '[data-want-id]', '.project-card', '.order-card', '.wants-card', '.js-want-card', '.project-item', '.order-item', '.task-card'];
+            for (const sel of selectors) {
+                const found = document.querySelectorAll(sel);
+                if (found.length > 0) return found.length;
+            }
+            return 0;
+        }
+    """)
+    logger.info("[parser] Категория %s: найдено сырых карточек: %d", category_id, card_count_raw)
+
+    if card_count_raw == 0:
+        try:
+            html = await page.content()
+            title = await page.title()
+            logger.warning("[parser] Категория %s: 0 карточек. Title: %s. HTML (first 5000): %s",
+                          category_id, title, html[:5000])
+        except Exception:
+            pass
+        return []
 
     orders = await page.evaluate(_EXTRACT_JS)
 
@@ -145,14 +283,40 @@ async def _fetch_orders_for_category(page, category_id: str) -> list[dict]:
         )
 
     if not orders:
-        title = await page.title()
-        body_snippet = await page.evaluate("() => document.body.innerText.slice(0, 300)")
-        logger.debug(
-            "[parser][debug] fc=%s | title='%s' | .want-card найдено сырых: %d | начало текста: %r",
-            category_id, title, card_count_raw, body_snippet
-        )
+        try:
+            html = await page.content()
+            title = await page.title()
+            logger.warning("[parser] Категория %s: 0 заказов после парсинга. Title: %s. HTML (first 5000): %s",
+                          category_id, title, html[:5000])
+        except Exception:
+            pass
 
     return orders
+
+
+_shutdown_event = asyncio.Event()
+
+
+def _parse_replies_count(text: str) -> int:
+    if not text:
+        return 0
+    match = re.search(r"(\d+)", text)
+    return int(match.group(1)) if match else 0
+
+
+def _is_too_old(published_at: str, max_age_hours: float = settings.MAX_AGE_HOURS) -> bool:
+    if not published_at:
+        return False
+    try:
+        normalized = published_at.replace("Z", "+00:00")
+        if "+00:00" not in normalized and "Z" not in normalized:
+            normalized += "+00:00"
+        dt = datetime.fromisoformat(normalized)
+        now = datetime.now(timezone.utc)
+        return (now - dt).total_seconds() > max_age_hours * 3600
+    except Exception as e:
+        logger.debug("Не удалось распарсить дату '%s': %s", published_at, e)
+        return False
 
 
 async def fetch_new_orders() -> AsyncGenerator[dict, None]:
@@ -189,7 +353,7 @@ async def fetch_new_orders() -> AsyncGenerator[dict, None]:
                 except Exception:
                     pass
                 browser = None
-                for attempt in range(1, max_launch_attempts + 1):
+                for attempt in range(1, 4):
                     try:
                         browser = await p.chromium.launch(
                             headless=True,
@@ -215,10 +379,10 @@ async def fetch_new_orders() -> AsyncGenerator[dict, None]:
                         logger.info("Браузер успешно запущен (попытка %d)", attempt)
                         return True
                     except Exception as e:
-                        logger.error("Не удалось запустить браузер (попытка %d/%d): %s", attempt, max_launch_attempts, e)
-                        if attempt < max_launch_attempts:
-                            await asyncio.sleep(launch_delay)
-                logger.error("Не удалось запустить браузер после %d попыток", max_launch_attempts)
+                        logger.error("Не удалось запустить браузер (попытка %d/3): %s", attempt, e)
+                        if attempt < 3:
+                            await asyncio.sleep(5.0)
+                logger.error("Не удалось запустить браузер после 3 попыток")
                 return False
             return True
 
@@ -238,13 +402,13 @@ async def fetch_new_orders() -> AsyncGenerator[dict, None]:
 
                     user_agent = random.choice(USER_AGENTS)
                     page = await browser.new_page(user_agent=user_agent)
-                    page.set_default_timeout(15000)
+                    page.set_default_timeout(30000)
 
                     try:
                         orders = await _fetch_orders_for_category(page, category_id)
                     except Exception as e:
                         logger.exception("Ошибка при обходе категории %s: %s", category_id, e)
-                        await asyncio.sleep(3)
+                        await asyncio.sleep(5)
                         continue
 
                     sent_in_category = 0
@@ -300,7 +464,6 @@ async def fetch_new_orders() -> AsyncGenerator[dict, None]:
 
                 await asyncio.sleep(3 + random.uniform(0, 2))
         finally:
-            # Гарантированно закрываем браузер при выходе
             if browser:
                 try:
                     await browser.close()

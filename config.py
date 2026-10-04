@@ -66,7 +66,7 @@ class Settings:
     MAX_REPLIES: int = int(os.getenv("MAX_REPLIES", "15"))
     MAX_AGE_HOURS: float = float(os.getenv("MAX_AGE_HOURS", "2.0"))
 
-    PAGE_LOAD_TIMEOUT: int = int(os.getenv("PAGE_LOAD_TIMEOUT", "30000"))
+    PAGE_LOAD_TIMEOUT: int = int(os.getenv("PAGE_LOAD_TIMEOUT", "60000"))
 
     SEEN_ORDERS_FILE: str = os.getenv("SEEN_ORDERS_FILE", "/data/seen_orders.json")
 
