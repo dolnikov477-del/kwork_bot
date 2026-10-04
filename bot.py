@@ -96,18 +96,16 @@ def _format_order_message(order: dict, reply_text: str = "", source: str = "") -
     return "\n\n".join(parts)
 
 
-def _split_message(text: str, max_len: int = 4000) -> list[str]:
-    parts = []
-    while text:
-        if len(text) <= max_len:
-            parts.append(text)
-            break
-        split_at = text.rfind("\n", 0, max_len)
-        if split_at == -1:
-            split_at = max_len
-        parts.append(text[:split_at])
-        text = text[split_at:].lstrip("\n")
-    return parts
+def _clean_reply(text: str) -> str:
+    """Удаляет тире и лишние знаки, оставляет только запятые и точки."""
+    import re
+    t = text
+    t = re.sub(r"[—–-]", "", t)  # тире
+    t = re.sub(r"[;:]", ",", t)   # точка с запятой и двоеточие -> запятая
+    t = re.sub(r"[!?]", ".", t)   # восклицание/вопрос -> точка
+    t = re.sub(r"[()\[\]{}]", "", t)  # скобки
+    t = re.sub(r"\s+", " ", t)    # лишние пробелы
+    return t.strip()
 
 
 @dp.message(CommandStart())
@@ -156,20 +154,14 @@ async def on_generate_reply(callback: CallbackQuery) -> None:
         await callback.message.answer("Не удалось сгенерировать отклик. Попробуйте позже.")
         return
 
+    # Чистим отклик от тире и лишних знаков
+    reply_text = _clean_reply(reply_text)
+
     logger.info("Длина %s-отклика для заказа %s: %d символов", source, order_id, len(reply_text))
 
     try:
-        # Сначала отправляем сообщение с заказом
-        order_message = _format_order_message(order)
-        await callback.message.answer(
-            order_message,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-        )
-        
-        # Затем отправляем отклик отдельным сообщением
+        # Отправляем ТОЛЬКО отклик (заказ уже был прислан при парсинге)
         if source == "ai":
-            # Для ИИ добавляем пометку
             await callback.message.answer(
                 f"🤖 <b>Отклик (ИИ)</b>:\n\n{reply_text}",
                 parse_mode=ParseMode.HTML,
