@@ -1,18 +1,29 @@
 import os
 import re
 import asyncio
+import random
 import logging
+from typing import Tuple, Optional
 
 from config import settings
 
 logger = logging.getLogger(__name__)
 
 USE_AI = os.getenv("USE_AI", "false").lower() == "true"
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-MAX_ATTEMPTS = 3
 
 types = None
 _client = None
+
+# Semaphore для ограничения параллелизма запросов к Gemini
+_gemini_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    global _gemini_semaphore
+    if _gemini_semaphore is None:
+        _gemini_semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_REQUESTS)
+    return _gemini_semaphore
+
 
 if USE_AI:
     try:
@@ -120,6 +131,11 @@ def build_user_prompt(title: str, description: str, price: str) -> str:
     )
 
 
+def build_fallback_reply(title: str) -> str:
+    """Строит системный отклик по шаблону из конфига."""
+    return settings.FALLBACK_TEMPLATE.format(title=title)
+
+
 # ---------- Постобработка и проверка ----------
 
 EN_WORDS = {
@@ -175,77 +191,162 @@ def find_problems(text: str) -> list[str]:
     return problems
 
 
-# ---------- Генерация ----------
+# Коды ошибок, при которых делаем ретрай
+RETRYABLE_STATUS_CODES = {429, 500, 503, 504}
+NON_RETRYABLE_STATUS_CODES = {400, 401, 403, 404}
 
-async def generate_reply(title: str, description: str, price: str = "") -> str:
-    """Генерирует отклик через Gemini, чистит текст и при необходимости просит переписать."""
 
+def _is_retryable_error(e: Exception) -> bool:
+    """Определяет, стоит ли ретраить при данной ошибке."""
+    # Сетевые ошибки и таймауты
+    if isinstance(e, (asyncio.TimeoutError, ConnectionError, OSError)):
+        return True
+    # Ошибки Google GenAI SDK
+    if hasattr(e, "status_code"):
+        return e.status_code in RETRYABLE_STATUS_CODES
+    # Проверяем по тексту ошибки (для обёрток)
+    err_text = str(e).lower()
+    if any(code in err_text for code in ("429", "500", "503", "504")):
+        return True
+    if any(code in err_text for code in ("400", "401", "403", "404")):
+        return False
+    # По умолчанию ретраим на неизвестные ошибки
+    return True
+
+
+async def _try_generate_with_model(
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    attempt: int,
+    max_attempts: int,
+    order_title: str,
+) -> Optional[str]:
+    """Пытается сгенерировать отклик конкретной моделью с ретраями."""
+    if _client is None or types is None:
+        return None
+
+    semaphore = _get_semaphore()
+
+    for attempt_num in range(1, max_attempts + 1):
+        async with semaphore:
+            # Небольшая задержка перед стартом запроса для сглаживания всплесков
+            if settings.REQUEST_START_DELAY > 0:
+                await asyncio.sleep(random.uniform(0, settings.REQUEST_START_DELAY))
+
+            try:
+                logger.info(
+                    "Вызываю Gemini (model=%s, attempt=%d/%d, order=%s)",
+                    model, attempt_num, max_attempts, order_title
+                )
+                cfg = dict(
+                    system_instruction=system_prompt,
+                    temperature=0.8,
+                    top_p=0.95,
+                    max_output_tokens=3000,
+                )
+                if "2.5" in model:
+                    cfg["thinking_config"] = types.ThinkingConfig(thinking_budget=512)
+                config = types.GenerateContentConfig(**cfg)
+
+                response = await _client.aio.models.generate_content(
+                    model=model,
+                    contents=user_prompt,
+                    config=config,
+                )
+            except Exception as e:
+                # Проверяем, ретраить ли
+                if _is_retryable_error(e):
+                    status_code = getattr(e, "status_code", None)
+                    logger.warning(
+                        "Gemini ошибка (model=%s, attempt=%d/%d, order=%s): %s (ретраим)",
+                        model, attempt_num, settings.MAX_ATTEMPTS_PER_MODEL, order_title, e
+                    )
+                    if attempt_num < settings.MAX_ATTEMPTS_PER_MODEL:
+                        # Экспоненциальная задержка с джиттером: min(2**attempt, 30) + random(0, 1.5)
+                        delay = min(2 ** attempt_num, 30) + random.uniform(0, 1.5)
+                        logger.debug("Жду %.1f сек перед ретраем", delay)
+                        await asyncio.sleep(delay)
+                        continue
+                else:
+                    # Не ретраим - это ошибка модели/ключа/доступа
+                    logger.error(
+                        "Gemini неретраимовая ошибка (model=%s, order=%s): %s",
+                        model, order_title, e
+                    )
+                    return None
+                continue
+
+            raw = (response.text or "").strip()
+            logger.info("=== СЫРОЙ ОТВЕТ (model=%s) ===\n%s", model, raw)
+
+            if not raw:
+                logger.warning("Пустой ответ модели (model=%s, attempt=%d, order=%s)", model, attempt_num, order_title)
+                if attempt_num < settings.MAX_ATTEMPTS_PER_MODEL:
+                    delay = min(2 ** attempt_num, 30) + random.uniform(0, 1.5)
+                    await asyncio.sleep(delay)
+                continue
+
+            text = clean_reply(raw)
+            problems = find_problems(text)
+
+            if not problems:
+                logger.info(
+                    "Отклик принят (model=%s, %d символов, order=%s): %s",
+                    model, len(text), order_title, text
+                )
+                return text
+
+            logger.warning("Проблемы в отклике (model=%s): %s", model, problems)
+            if attempt_num < settings.MAX_ATTEMPTS_PER_MODEL:
+                delay = min(2 ** attempt_num, 30) + random.uniform(0, 1.5)
+                await asyncio.sleep(delay)
+
+    return None
+
+
+async def generate_reply(title: str, description: str, price: str = "") -> Tuple[str, str]:
+    """
+    Генерирует отклик через Gemini с fallback цепочкой моделей.
+    Возвращает (text, source) где source = "ai" или "fallback_template".
+    """
     if not title or not title.strip():
         logger.error("Пустой заголовок заказа")
-        return "Ошибка: не указан заголовок заказа"
+        return "Ошибка: не указан заголовок заказа", "fallback_template"
 
     if not description or not description.strip():
         logger.error("Пустое описание заказа")
-        return "Ошибка: не указано описание заказа"
+        return "Ошибка: не указано описание заказа", "fallback_template"
 
     if _client is None or types is None:
         logger.error("ИИ клиент не инициализирован (USE_AI=false или нет GEMINI_API_KEY)")
-        return "Не удалось сгенерировать отклик: ИИ отключен. Установите USE_AI=true и GEMINI_API_KEY"
+        fallback = build_fallback_reply(title)
+        return fallback, "fallback_template"
 
     system_prompt = build_system_prompt()
     user_prompt = build_user_prompt(title, description, price)
     logger.info("=== USER PROMPT ===\n%s", user_prompt)
 
-    cfg = dict(
-        system_instruction=system_prompt,
-        temperature=0.8,
-        top_p=0.95,
-        max_output_tokens=3000,
-    )
-    if "2.5" in GEMINI_MODEL:
-        cfg["thinking_config"] = types.ThinkingConfig(thinking_budget=512)
-    config = types.GenerateContentConfig(**cfg)
+    # Пробуем модели по порядку
+    for model_idx, model in enumerate(settings.GEMINI_MODELS):
+        logger.info("Пробую модель %d/%d: %s (order=%s)", model_idx + 1, len(settings.GEMINI_MODELS), model, title)
 
-    best, best_problems = None, None
-    feedback = ""
-
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        try:
-            logger.info("Вызываю Gemini (%s), попытка %d/%d", GEMINI_MODEL, attempt, MAX_ATTEMPTS)
-            response = await _client.aio.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=user_prompt + feedback,
-                config=config,
-            )
-        except Exception as e:
-            logger.warning("Gemini ошибка (попытка %d/%d): %s", attempt, MAX_ATTEMPTS, e)
-            await asyncio.sleep(2)
-            continue
-
-        raw = (response.text or "").strip()
-        logger.info("=== СЫРОЙ ОТВЕТ ===\n%s", raw)
-        if not raw:
-            logger.warning("Пустой ответ модели (попытка %d)", attempt)
-            continue
-
-        text = clean_reply(raw)
-        problems = find_problems(text)
-        if not problems:
-            logger.info("Отклик принят (%d символов):\n%s", len(text), text)
-            return text
-
-        logger.warning("Проблемы в отклике: %s", problems)
-        if best is None or len(problems) < len(best_problems):
-            best, best_problems = text, problems
-        feedback = (
-            "\n\nПредыдущий вариант не подошёл по причинам: "
-            + " ".join(problems)
-            + " Напиши новый вариант с нуля и исправь это."
+        result = await _try_generate_with_model(
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            attempt=1,
+            max_attempts=settings.MAX_ATTEMPTS_PER_MODEL,
+            order_title=title,
         )
 
-    if best:
-        logger.warning("Отдаю лучший из неидеальных вариантов, проблемы: %s", best_problems)
-        return best
+        if result:
+            logger.info("Заказ %s: отклик сгенерирован моделью %s (source=ai)", title, model)
+            return result, "ai"
 
-    logger.error("Gemini не дал ответа за %d попытки", MAX_ATTEMPTS)
-    return "Не удалось сгенерировать отклик: ИИ не ответил после нескольких попыток"
+        logger.warning("Модель %s не дала результата для заказа %s, переходим к следующей", model, title)
+
+    # Все модели провалились - используем системный шаблон
+    fallback = build_fallback_reply(title)
+    logger.error("Заказ %s: ИИ не ответил, использован шаблон (source=fallback_template)", title)
+    return fallback, "fallback_template"

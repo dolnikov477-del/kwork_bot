@@ -103,19 +103,32 @@ _EXTRACT_JS = """
 
 
 async def _fetch_orders_for_category(page, category_id: str) -> list[dict]:
-    """Переходит на страницу категории и возвращает заказы."""
+    """Переходит на страницу категории и возвращает заказы. При таймауте делает 1 повторную попытку."""
     url = f"{KWORK_BASE_URL}?fc={category_id}"
     logger.info("[parser] Перехожу на URL: %s", url)
-    try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=settings.PAGE_LOAD_TIMEOUT)
-        await page.wait_for_selector('.want-card', timeout=10000)
-        await page.wait_for_timeout(1000)
-    except PlaywrightTimeoutError:
-        logger.warning("[parser] Таймаут загрузки категории %s", category_id)
-        return []
-    except Exception as e:
-        logger.exception("[parser] Ошибка при переходе на категорию %s: %s", category_id, e)
-        return []
+
+    # Повторная попытка при таймауте (макс 2 попытки всего)
+    for attempt in range(1, 3):
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=settings.PAGE_LOAD_TIMEOUT)
+            await page.wait_for_selector('.want-card', timeout=10000)
+            await page.wait_for_timeout(1000)
+            break  # Успешно загрузили
+        except PlaywrightTimeoutError:
+            logger.warning("[parser] Таймаут загрузки категории %s (попытка %d/2)", category_id, attempt)
+            if attempt == 1:
+                # Перезагружаем страницу перед повторной попыткой
+                try:
+                    await page.reload(wait_until="domcontentloaded", timeout=settings.PAGE_LOAD_TIMEOUT)
+                except Exception:
+                    pass
+                continue
+            else:
+                logger.error("[parser] Таймаут загрузки категории %s после 2 попыток", category_id)
+                return []
+        except Exception as e:
+            logger.exception("[parser] Ошибка при переходе на категорию %s: %s", category_id, e)
+            return []
 
     logger.info("[parser] Ищу карточки заказов на странице категории %s...", category_id)
     card_count_raw = await page.evaluate("() => document.querySelectorAll('.want-card').length")

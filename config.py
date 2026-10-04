@@ -18,7 +18,20 @@ class Settings:
     USE_AI: bool = os.getenv("USE_AI", "false").lower() == "true"
     GEMINI_PROXY_URL: str = os.getenv("GEMINI_PROXY_URL", "")  # Cloudflare Worker URL для обхода блокировки в РФ
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+
+    # Модели Gemini в порядке приоритета (fallback chain)
+    GEMINI_MODELS: list[str] = _split_csv(os.getenv("GEMINI_MODELS", "gemini-3.8-flash,gemini-2.5-flash,gemini-2.5-flash-lite"))
+
+    # Ретраи и параллелизм
+    MAX_ATTEMPTS_PER_MODEL: int = int(os.getenv("MAX_ATTEMPTS_PER_MODEL", "5"))
+    MAX_CONCURRENT_REQUESTS: int = int(os.getenv("MAX_CONCURRENT_REQUESTS", "2"))
+    REQUEST_START_DELAY: float = float(os.getenv("REQUEST_START_DELAY", "0.5"))
+
+    # Системный шаблон отклика (fallback) — минимум 400 символов
+    FALLBACK_TEMPLATE: str = os.getenv(
+        "FALLBACK_TEMPLATE",
+        "Здравствуйте! Меня зовут Артём. Внимательно изучил ваш заказ «{title}» и понял, какая задача стоит перед нами. Имею релевантный опыт решения подобных задач: разрабатывал телеграм-ботов, парсеров, автоматизировал бизнес-процессы, делал интеграции с CRM и маркетплейсами. Знаю типичные подводные камни и как их обойти, чтобы результат получился стабильным и в срок. Готов взяться за работу сразу после уточнения деталей — напишите, пожалуйста, что именно важно в вашем случае, и я назову точные сроки и стоимость. Жду вашего ответа, чтобы начать!"
+    )
 
     # YandexGPT (альтернатива для РФ)
     YANDEX_API_KEY: str = os.getenv("YANDEX_API_KEY", "")

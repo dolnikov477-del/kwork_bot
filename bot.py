@@ -77,7 +77,8 @@ def _order_keyboard(order_id: str, url: str) -> InlineKeyboardMarkup:
     )
 
 
-def _format_order_message(order: dict) -> str:
+def _format_order_message(order: dict, reply_text: str = "", source: str = "") -> str:
+    """Форматирует сообщение с заказом и опционально с откликом."""
     parts = [f"🆕 {order['title']}"]
     if order.get("price"):
         parts.append(f"💰 Бюджет: {order['price']}")
@@ -86,6 +87,14 @@ def _format_order_message(order: dict) -> str:
         description = description[:300] + "..."
     if description:
         parts.append(f"📝 {description}")
+
+    if reply_text:
+        parts.append("─" * 30)
+        parts.append(f"🤖 <b>Отклик ({'ИИ' if source == 'ai' else 'шаблон'})</b>:")
+        parts.append(reply_text)
+        if source == "fallback_template":
+            parts.append("\n⚠️ <b>ИИ недоступен, подставлен шаблонный отклик.</b> Проверь и поправь перед отправкой.")
+
     return "\n\n".join(parts)
 
 
@@ -115,7 +124,7 @@ async def on_start(message: Message) -> None:
 async def on_generate_reply(callback: CallbackQuery) -> None:
     # СРАЗУ отвечаем на callback, чтобы не было "query is too old"
     await callback.answer()
-    
+
     order_id = callback.data.split(":", 1)[1]
     order = get_order(order_id)
 
@@ -127,26 +136,16 @@ async def on_generate_reply(callback: CallbackQuery) -> None:
     status_msg = await callback.message.answer("⏳ Генерирую отклик...")
 
     reply_text = ""
-    max_retries = 3
-    base_delay = 1.0
-    
-    for i in range(max_retries):
-        try:
-            reply_text = await generate_reply(
-                order["title"], order["description"], order.get("price", "")
-            )
-        except Exception as e:
-            logger.error("Ошибка генерации отклика (попытка %d/%d): %s", i + 1, max_retries, e)
-            if i < max_retries - 1:
-                await asyncio.sleep(base_delay * (2 ** i))
-            continue
+    source = "fallback_template"
 
-        if reply_text and reply_text.strip():
-            break
-        else:
-            logger.warning("Получен пустой отклик от AI (попытка %d/%d)", i + 1, max_retries)
-            if i < max_retries - 1:
-                await asyncio.sleep(base_delay * (2 ** i))
+    try:
+        reply_text, source = await generate_reply(
+            order["title"], order["description"], order.get("price", "")
+        )
+    except Exception as e:
+        logger.error("Ошибка генерации отклика для заказа %s: %s", order_id, e)
+        reply_text = ""
+        source = "fallback_template"
 
     # Удаляем статус-сообщение
     try:
@@ -155,22 +154,24 @@ async def on_generate_reply(callback: CallbackQuery) -> None:
         pass
 
     if not reply_text or not reply_text.strip():
-        logger.error("Не удалось сгенерировать валидный отклик для заказа %s после %d попыток", order_id, max_retries)
+        logger.error("Не удалось сгенерировать валидный отклик для заказа %s", order_id)
         await callback.message.answer("Не удалось сгенерировать отклик. Попробуйте позже.")
         return
 
-    logger.info("Длина AI-отклика для заказа %s: %d символов", order_id, len(reply_text))
+    logger.info("Длина %s-отклика для заказа %s: %d символов", source, order_id, len(reply_text))
 
     try:
-        parts = _split_message(reply_text, max_len=4000)
+        # Формируем сообщение с заказом и откликом
+        full_message = _format_order_message(order, reply_text, source)
+        parts = _split_message(full_message, max_len=4000)
         for part in parts:
             await callback.message.answer(
                 part,
-                parse_mode=None,
+                parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             )
     except Exception as e:
-        logger.error("Ошибка отправки AI-отклика для заказа %s: %s", order_id, e)
+        logger.error("Ошибка отправки отклика для заказа %s: %s", order_id, e)
         await callback.message.answer("Не удалось отправить отклик. Попробуйте позже.")
 
 
