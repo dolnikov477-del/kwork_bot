@@ -6,52 +6,46 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 
-# Профиль для информации (не используется в шаблонах, но может пригодиться)
-PROFILE = {
-    "name": "Артём",
-    "specialization": "веб-разработка, боты, парсинг, автоматизация",
-    "cases": [
-        "бот для барбершопа: записи выросли на 30%, пропуски снизились за счёт напоминаний",
-        "парсер товаров для маркетплейса: 50 тысяч товаров в сутки, экспорт в CSV и API",
-        "лендинг для стартапа: конверсия выросла в 2 раза, адаптивная вёрстка за 3 дня",
-        "автоматизация CRM: интеграция амоСРМ с телеграм-ботом, заявки попадают в CRM сразу",
-    ],
-    "typical_terms": "бот за 3-5 дней, парсер за 1-2 дня, лендинг за 2-4 дня, интеграция за 2-3 дня",
-}
+def _extract_action_and_details(title: str, description: str) -> Tuple[str, str]:
+    """Извлекает действие и детали из title + description по ключевым словам."""
+    text = f"{title} {description}".lower()
+
+    for entry in settings.ACTION_KEYWORDS:
+        for kw in entry["keywords"]:
+            if kw in text:
+                return entry["action"], entry["details"]
+
+    # Фоллбэк — пробуем выхватить глагол из начала title
+    import re
+    verbs = ["сделать", "создать", "разработать", "написать", "спарсить", "спарсить", "перевести",
+             "нарисовать", "нарисовать", "смонтировать", "смонтировать", "настроить", "интегрировать",
+             "автоматизировать", "разработать", "подготовить", "подобрать", "найти", "собрать"]
+    for v in verbs:
+        if v in title.lower():
+            # Выхватываем пару слов после глагола
+            match = re.search(rf"{v}\s+(.+?)(?:\.|,|$)", title.lower())
+            detail = match.group(1)[:60] if match else "данную задачу"
+            return v, detail
+
+    return "решение вашей задачи", "подготовку качественного результата в срок"
 
 
 def build_fallback_reply(title: str, description: str = "") -> str:
-    """Выбирает шаблон по ключевым словам в title/description."""
-    text = f"{title} {description}".lower()
-
-    keyword_map = [
-        ("бот", "бот"),
-        ("парс", "парс"),
-        ("лендинг", "лендинг"),
-        ("сайт", "сайт"),
-        ("дизайн", "дизайн"),
-        ("автоматиз", "автоматиз"),
-        ("интеграц", "интеграц"),
-        ("видео", "видео"),
-        ("сео", "seo"),
-        ("текст", "текст"),
-    ]
-
-    for keyword, template_key in keyword_map:
-        if keyword in text:
-            template = settings.TEMPLATES_BY_KEYWORDS.get(template_key)
-            if template:
-                return template.format(title=title)
-
-    return settings.FALLBACK_TEMPLATE.format(title=title)
+    """Строит отклик, подставляя action и details."""
+    action, details = _extract_action_and_details(title, description)
+    return settings.FALLBACK_TEMPLATE.format(
+        title=title,
+        action=action,
+        details=details
+    )
 
 
 async def generate_reply(title: str, description: str, price: str = "") -> Tuple[str, str]:
-    """Возвращает релевантный шаблонный отклик."""
+    """Возвращает отклик с подставленными action/details."""
     if not title or not title.strip():
         logger.error("Пустой заголовок заказа")
         return "Ошибка: не указан заголовок заказа", "fallback_template"
 
     reply = build_fallback_reply(title, description)
-    logger.info("Шаблонный отклик для заказа %s (%d символов)", title, len(reply))
+    logger.info("Шаблонный отклик для заказа %s (action=%s, %d символов)", title, len(reply))
     return reply, "fallback_template"
