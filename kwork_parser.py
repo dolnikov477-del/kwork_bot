@@ -252,7 +252,7 @@ _EXTRACT_JS = """
 
 
 async def _fetch_orders_for_category(page, category_id: str) -> list[dict]:
-    """Переходит на страницу категории и возвращает заказы. 3 попытки с увеличенными таймаутами."""
+    """Переходит на страницу категории и возвращает заказы."""
     url = f"{KWORK_BASE_URL}?fc={category_id}"
     logger.info("[parser] Перехожу на URL: %s", url)
 
@@ -260,7 +260,7 @@ async def _fetch_orders_for_category(page, category_id: str) -> list[dict]:
 
     for attempt in range(1, 4):
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
             
             # Проверка на блокировку сразу после загрузки
             if await _is_blocked(page):
@@ -268,18 +268,43 @@ async def _fetch_orders_for_category(page, category_id: str) -> list[dict]:
                     return []
                 continue
             
-            # Ждём любой из возможных селекторов
-            await page.wait_for_selector(
-                '.want-card, .card, [data-want-id], .project-card, .order-card, .wants-card, .js-want-card, .project-item, .order-item, .task-card, a[href*="/projects/"]',
-                timeout=20000
-            )
+            # Ждём загрузки страницы (не обязательно наличие карточек)
             await page.wait_for_timeout(3000)
+            
+            # Проверяем есть ли на странице карточки (быстрая проверка)
+            has_cards = await page.evaluate("""
+                () => {
+                    const selectors = ['.want-card', '.card', '[data-want-id]', '.project-card', '.order-card', '.wants-card', '.js-want-card', '.project-item', '.order-item', '.task-card', 'a[href*="/projects/"]'];
+                    for (const sel of selectors) {
+                        if (document.querySelectorAll(sel).length > 0) return true;
+                    }
+                    return false;
+                }
+            """)
+            
+            if not has_cards:
+                title = await page.title()
+                html_len = await page.evaluate("() => document.body.innerHTML.length")
+                logger.warning(
+                    "[parser] Категория %s: карточки не найдены (попытка %d). Title=%s, body_len=%d",
+                    category_id, attempt, title, html_len
+                )
+                if attempt < 3:
+                    # Пробуем перезагрузить с другим User-Agent
+                    new_ua = random.choice(USER_AGENTS)
+                    await page.set_extra_http_headers({"User-Agent": new_ua})
+                    await page.reload(wait_until="domcontentloaded", timeout=timeout)
+                    await page.wait_for_timeout(5000)
+                    continue
+                else:
+                    return []
+            
             break
         except PlaywrightTimeoutError:
             logger.warning("[parser] Таймаут загрузки категории %s (попытка %d/3)", category_id, attempt)
             if attempt < 3:
                 try:
-                    await page.reload(wait_until="domcontentloaded", timeout=60000)
+                    await page.reload(wait_until="domcontentloaded", timeout=timeout)
                     await page.wait_for_timeout(5000)
                 except Exception:
                     pass
@@ -290,7 +315,6 @@ async def _fetch_orders_for_category(page, category_id: str) -> list[dict]:
                     html = await page.content()
                     title = await page.title()
                     logger.error("[parser][debug] HTML category %s | title: %s | len: %d", category_id, title, len(html))
-                    logger.debug("[parser][debug] HTML (first 5000): %s", html[:5000])
                 except Exception:
                     pass
                 return []
