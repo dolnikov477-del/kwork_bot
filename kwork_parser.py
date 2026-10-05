@@ -28,6 +28,19 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
 ]
 
+# Настройки защиты от блокировок
+BLOCK_DETECTION_TITLE = "Доступ заблокирован"
+BLOCK_DETECTION_SELECTORS = [
+    "text=Доступ заблокирован",
+    ".captcha",
+    "[data-testid='captcha']",
+    "#challenge-form",
+    ".cf-challenge-running",
+]
+MAX_BLOCK_RETRIES = 3
+BLOCK_RETRY_DELAY_BASE = 60  # базовая задержка в секундах при блокировке
+BLOCK_RETRY_DELAY_MAX = 300  # максимальная задержка в секундах
+
 _shutdown_event = asyncio.Event()
 
 
@@ -51,6 +64,64 @@ def _is_too_old(published_at: str, max_age_hours: float = settings.MAX_AGE_HOURS
     except Exception as e:
         logger.debug("Не удалось распарсить дату '%s': %s", published_at, e)
         return False
+
+
+async def _is_blocked(page) -> bool:
+    """Проверяет, заблокирован ли доступ (капча, страница блокировки и т.д.)."""
+    try:
+        title = await page.title()
+        if BLOCK_DETECTION_TITLE in title:
+            return True
+        
+        content = await page.content()
+        if BLOCK_DETECTION_TITLE in content:
+            return True
+            
+        for selector in BLOCK_DETECTION_SELECTORS:
+            try:
+                if await page.query_selector(selector):
+                    return True
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return False
+
+
+async def _handle_block(page, category_id: str, attempt: int) -> bool:
+    """
+    Обрабатывает обнаруженную блокировку.
+    Возвращает True, если стоит повторить попытку, False — если прерывать.
+    """
+    logger.warning(
+        "[parser][block] Обнаружена блокировка для категории %s (попытка %d/%d)",
+        category_id, attempt, MAX_BLOCK_RETRIES
+    )
+    
+    # Уведомление администратора (заглушка — можно интегрировать с ботом)
+    logger.critical(
+        "[parser][ALERT] Блокировка на категории %s! Требуется вмешательство администратора.",
+        category_id
+    )
+    
+    if attempt >= MAX_BLOCK_RETRIES:
+        logger.error("[parser][block] Превышено макс. число попыток (%d) для категории %s", MAX_BLOCK_RETRIES, category_id)
+        return False
+    
+    # Экспоненциальная задержка с джиттером
+    delay = min(BLOCK_RETRY_DELAY_BASE * (2 ** (attempt - 1)) + random.uniform(0, 10), BLOCK_RETRY_DELAY_MAX)
+    logger.info("[parser][block] Пауза %.1f сек перед повтором...", delay)
+    await asyncio.sleep(delay)
+    
+    # Пробуем обновить страницу с новым User-Agent
+    try:
+        new_ua = random.choice(USER_AGENTS)
+        await page.set_extra_http_headers({"User-Agent": new_ua})
+        await page.reload(wait_until="domcontentloaded", timeout=60000)
+    except Exception as e:
+        logger.warning("[parser][block] Ошибка при смене UA/перезагрузке: %s", e)
+    
+    return True
 
 
 # Улучшенный JS с множественными fallback селекторами
@@ -179,33 +250,6 @@ _EXTRACT_JS = """
 }
 """
 
-_shutdown_event = asyncio.Event()
-
-
-def _parse_replies_count(text: str) -> int:
-    if not text:
-        return 0
-    match = re.search(r"(\d+)", text)
-    return int(match.group(1)) if match else 0
-
-
-def _is_too_old(published_at: str, max_age_hours: float = settings.MAX_AGE_HOURS) -> bool:
-    if not published_at:
-        return False
-    try:
-        normalized = published_at.replace("Z", "+00:00")
-        if "+00:00" not in normalized and "Z" not in normalized:
-            normalized += "+00:00"
-        dt = datetime.fromisoformat(normalized)
-        now = datetime.now(timezone.utc)
-        return (now - dt).total_seconds() > max_age_hours * 3600
-    except Exception as e:
-        logger.debug("Не удалось распарсить дату '%s': %s", published_at, e)
-        return False
-
-
-_shutdown_event = asyncio.Event()
-
 
 async def _fetch_orders_for_category(page, category_id: str) -> list[dict]:
     """Переходит на страницу категории и возвращает заказы. 3 попытки с увеличенными таймаутами."""
@@ -217,6 +261,13 @@ async def _fetch_orders_for_category(page, category_id: str) -> list[dict]:
     for attempt in range(1, 4):
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            
+            # Проверка на блокировку сразу после загрузки
+            if await _is_blocked(page):
+                if not await _handle_block(page, category_id, attempt):
+                    return []
+                continue
+            
             # Ждём любой из возможных селекторов
             await page.wait_for_selector(
                 '.want-card, .card, [data-want-id], .project-card, .order-card, .wants-card, .js-want-card, .project-item, .order-item, .task-card, a[href*="/projects/"]',
@@ -249,6 +300,11 @@ async def _fetch_orders_for_category(page, category_id: str) -> list[dict]:
 
     logger.info("[parser] Ищу карточки заказов на странице категории %s...", category_id)
     
+    # Проверка на блокировку перед парсингом
+    if await _is_blocked(page):
+        if not await _handle_block(page, category_id, 1):
+            return []
+
     # Пробуем разные селекторы для подсчёта карточек
     card_count_raw = await page.evaluate("""
         () => {
@@ -294,31 +350,6 @@ async def _fetch_orders_for_category(page, category_id: str) -> list[dict]:
     return orders
 
 
-_shutdown_event = asyncio.Event()
-
-
-def _parse_replies_count(text: str) -> int:
-    if not text:
-        return 0
-    match = re.search(r"(\d+)", text)
-    return int(match.group(1)) if match else 0
-
-
-def _is_too_old(published_at: str, max_age_hours: float = settings.MAX_AGE_HOURS) -> bool:
-    if not published_at:
-        return False
-    try:
-        normalized = published_at.replace("Z", "+00:00")
-        if "+00:00" not in normalized and "Z" not in normalized:
-            normalized += "+00:00"
-        dt = datetime.fromisoformat(normalized)
-        now = datetime.now(timezone.utc)
-        return (now - dt).total_seconds() > max_age_hours * 3600
-    except Exception as e:
-        logger.debug("Не удалось распарсить дату '%s': %s", published_at, e)
-        return False
-
-
 async def fetch_new_orders() -> AsyncGenerator[dict, None]:
     """
     Асинхронный генератор: выдаёт новые заказы по мере обнаружения.
@@ -340,8 +371,6 @@ async def fetch_new_orders() -> AsyncGenerator[dict, None]:
 
     async with async_playwright() as p:
         browser = None
-        max_launch_attempts = 3
-        launch_delay = 5.0
 
         async def ensure_browser() -> bool:
             nonlocal browser
@@ -462,7 +491,10 @@ async def fetch_new_orders() -> AsyncGenerator[dict, None]:
                         except Exception as e:
                             logger.error("Ошибка при закрытии страницы: %s", e)
 
-                await asyncio.sleep(3 + random.uniform(0, 2))
+                # Рандомная задержка между категориями для имитации человека
+                delay = 3 + random.uniform(0, 5)
+                logger.debug("[parser] Пауза %.1f сек перед следующей категорией...", delay)
+                await asyncio.sleep(delay)
         finally:
             if browser:
                 try:

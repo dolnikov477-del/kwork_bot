@@ -46,6 +46,11 @@ async def generate_reply(title: str, description: str, price: str = "") -> Tuple
         logger.error("Пустой заголовок заказа")
         return "Ошибка: не указан заголовок заказа", "fallback_template"
 
-    reply = build_fallback_reply(title, description)
-    logger.info("Шаблонный отклик для заказа %s (action=%s, %d символов)", title, len(reply))
+    action, details = _extract_action_and_details(title, description)
+    reply = settings.FALLBACK_TEMPLATE.format(
+        title=title,
+        action=action,
+        details=details
+    )
+    logger.info("Шаблонный отклик для заказа %s (action=%s, %d символов)", title, action, len(reply))
     return reply, "fallback_template"
