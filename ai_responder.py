@@ -1,42 +1,10 @@
 import logging
-from typing import Tuple
+from typing import Optional
 
 from config import settings
 from openai import AsyncOpenAI, APIError, APIConnectionError, RateLimitError, AuthenticationError, PermissionDeniedError
 
 logger = logging.getLogger(__name__)
-
-
-def _extract_action_and_details(title: str, description: str) -> Tuple[str, str]:
-    """Извлекает действие и детали из title + description по ключевым словам."""
-    text = f"{title} {description}".lower()
-
-    for entry in settings.ACTION_KEYWORDS:
-        for kw in entry["keywords"]:
-            if kw in text:
-                return entry["action"], entry["details"]
-
-    import re
-    verbs = ["сделать", "создать", "разработать", "написать", "спарсить", "перевести",
-             "нарисовать", "смонтировать", "настроить", "интегрировать",
-             "автоматизировать", "подготовить", "подобрать", "найти", "собрать"]
-    for v in verbs:
-        if v in title.lower():
-            match = re.search(rf"{v}\s+(.+?)(?:\.|,|$)", title.lower())
-            detail = match.group(1)[:60] if match else "данную задачу"
-            return v, detail
-
-    return "решение вашей задачи", "подготовку качественного результата в срок"
-
-
-def build_fallback_reply(title: str, description: str = "") -> str:
-    """Строит отклик, подставляя action и details."""
-    action, details = _extract_action_and_details(title, description)
-    return settings.FALLBACK_TEMPLATE.format(
-        title=title,
-        action=action,
-        details=details
-    )
 
 
 def _build_prompt(title: str, description: str, price: str = "") -> str:
@@ -64,19 +32,19 @@ def _build_prompt(title: str, description: str, price: str = "") -> str:
     return "\n".join(parts)
 
 
-async def generate_reply(title: str, description: str, price: str = "") -> Tuple[str, str]:
-    """Генерирует отклик через Groq API или возвращает шаблон как фоллбэк."""
+async def generate_reply(title: str, description: str, price: str = "") -> Optional[str]:
+    """Генерирует отклик через Groq API. Возвращает None при ошибке."""
     if not title or not title.strip():
         logger.error("Пустой заголовок заказа")
-        return "Ошибка: не указан заголовок заказа", "fallback_template"
+        return None
 
     if not settings.USE_AI:
-        logger.info("USE_AI=false, использую шаблонный отклик")
-        return build_fallback_reply(title, description), "fallback_template"
+        logger.warning("USE_AI=false, генерация откликов отключена")
+        return None
 
     if not settings.GROQ_API_KEY:
-        logger.warning("GROQ_API_KEY не задан, использую шаблонный отклик")
-        return build_fallback_reply(title, description), "fallback_template"
+        logger.error("GROQ_API_KEY не задан")
+        return None
 
     client = AsyncOpenAI(
         api_key=settings.GROQ_API_KEY,
@@ -99,28 +67,28 @@ async def generate_reply(title: str, description: str, price: str = "") -> Tuple
 
         reply_text = response.choices[0].message.content
         if not reply_text or not reply_text.strip():
-            logger.warning("Пустой ответ от Groq API, использую шаблон")
-            return build_fallback_reply(title, description), "fallback_template"
+            logger.warning("Пустой ответ от Groq API")
+            return None
 
         reply_text = reply_text.strip()
         logger.info("Groq отклик для заказа %s (%d символов, модель=%s)", title[:50], len(reply_text), settings.GROQ_MODEL)
-        return reply_text, "ai"
+        return reply_text
 
     except AuthenticationError:
-        logger.error("Groq API: ошибка аутентификации (неверный API ключ). Использую шаблон.")
-        return build_fallback_reply(title, description), "fallback_template"
+        logger.error("Groq API: ошибка аутентификации (неверный API ключ)")
+        return None
     except PermissionDeniedError:
-        logger.error("Groq API: доступ запрещён (403 Forbidden). Проверьте настройки сети/VPN/региона. Использую шаблон.")
-        return build_fallback_reply(title, description), "fallback_template"
+        logger.error("Groq API: доступ запрещён (403 Forbidden). Проверьте настройки сети/VPN/региона")
+        return None
     except RateLimitError as e:
-        logger.warning("Groq API: превышен лимит запросов (%s). Использую шаблон.", e)
-        return build_fallback_reply(title, description), "fallback_template"
+        logger.warning("Groq API: превышен лимит запросов (%s)", e)
+        return None
     except APIConnectionError as e:
-        logger.warning("Groq API: ошибка соединения (%s). Использую шаблон.", e)
-        return build_fallback_reply(title, description), "fallback_template"
+        logger.warning("Groq API: ошибка соединения (%s)", e)
+        return None
     except APIError as e:
-        logger.error("Groq API: ошибка API (%s). Использую шаблон.", e)
-        return build_fallback_reply(title, description), "fallback_template"
+        logger.error("Groq API: ошибка API (%s)", e)
+        return None
     except Exception as e:
-        logger.error("Groq API: неожиданная ошибка (%s). Использую шаблон.", e)
-        return build_fallback_reply(title, description), "fallback_template"
+        logger.error("Groq API: неожиданная ошибка (%s)", e)
+        return None

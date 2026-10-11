@@ -24,13 +24,6 @@ class Settings:
     MAX_CONCURRENT_REQUESTS: int = int(os.getenv("MAX_CONCURRENT_REQUESTS", "2"))
     REQUEST_START_DELAY: float = float(os.getenv("REQUEST_START_DELAY", "0.5"))
 
-# Системный шаблон отклика (fallback) — один оптимальный, ~400+ символов
-    # Подстановки: {action}, {details}
-    FALLBACK_TEMPLATE: str = os.getenv(
-        "FALLBACK_TEMPLATE",
-        "Здравствуйте! С удовольствием возьму на себя решение задачи: {action}. Опытный исполнитель, делал подобные проекты: {details}. Готов пристать к работе сразу — обсудите детали, уточните пожелания и сроки. Буду рад выполнить заказ — жду ваших пожеланий!"
-    )
-
     # Ключевые слова для извлечения действия и деталей (порядок важен: более специфичные выше)
     ACTION_KEYWORDS: list[dict] = [
         {"keywords": ["перевод", "перевести"], "action": "перевод текста", "details": "перевод с сохранением смысла и стиля"},

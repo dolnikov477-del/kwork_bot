@@ -131,17 +131,15 @@ async def on_generate_reply(callback: CallbackQuery) -> None:
     # Отправляем сообщение "Генерирую..."
     status_msg = await callback.message.answer("⏳ Генерирую отклик...")
 
-    reply_text = ""
-    source = "fallback_template"
+    reply_text = None
 
     try:
-        reply_text, source = await generate_reply(
+        reply_text = await generate_reply(
             order["title"], order["description"], order.get("price", "")
         )
     except Exception as e:
         logger.error("Ошибка генерации отклика для заказа %s: %s", order_id, e)
-        reply_text = ""
-        source = "fallback_template"
+        reply_text = None
 
     # Удаляем статус-сообщение
     try:
@@ -151,29 +149,20 @@ async def on_generate_reply(callback: CallbackQuery) -> None:
 
     if not reply_text or not reply_text.strip():
         logger.error("Не удалось сгенерировать валидный отклик для заказа %s", order_id)
-        await callback.message.answer("Не удалось сгенерировать отклик. Попробуйте позже.")
+        await callback.message.answer("ИИ не смог сгенерировать отклик. Попробуйте позже.")
         return
 
     # Чистим отклик от тире и лишних знаков
     reply_text = _clean_reply(reply_text)
 
-    logger.info("Длина %s-отклика для заказа %s: %d символов", source, order_id, len(reply_text))
+    logger.info("Длина ИИ-отклика для заказа %s: %d символов", order_id, len(reply_text))
 
     try:
-        # Отправляем ТОЛЬКО отклик (заказ уже был прислан при парсинге)
-        if source == "ai":
-            await callback.message.answer(
-                f"🤖 <b>Отклик (ИИ)</b>:\n\n{reply_text}",
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-            )
-        else:
-            # Для fallback — чистое сообщение как от человека
-            await callback.message.answer(
-                reply_text,
-                parse_mode=None,
-                disable_web_page_preview=True,
-            )
+        await callback.message.answer(
+            f"🤖 <b>Отклик (ИИ)</b>:\n\n{reply_text}",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
         # Помечаем заказ как полностью обработанный
         save_order(order, OrderState.PROCESSED)
     except Exception as e:
