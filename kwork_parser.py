@@ -10,12 +10,13 @@ import random
 import re
 import signal
 from datetime import datetime, timezone
+from enum import Enum
 from typing import AsyncGenerator
 
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 from config import settings
-from storage import is_seen
+from storage import is_seen, mark_order_detected
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,12 @@ BLOCK_RETRY_DELAY_BASE = 60  # базовая задержка в секунда
 BLOCK_RETRY_DELAY_MAX = 300  # максимальная задержка в секундах
 
 _shutdown_event = asyncio.Event()
+
+class BlockAction(Enum):
+    """Действие при обнаружении блокировки."""
+    RETRY = "retry"           # повторить попытку для этой категории
+    SKIP_CATEGORY = "skip"    # пропустить категорию, продолжить следующие
+    STOP_PARSING = "stop"     # полностью остановить парсинг
 
 
 def _parse_replies_count(text: str) -> int:
@@ -71,42 +78,67 @@ async def _is_blocked(page) -> bool:
     try:
         title = await page.title()
         if BLOCK_DETECTION_TITLE in title:
+            logger.debug("[parser][block] Блокировка по заголовку: %s", title)
             return True
         
         content = await page.content()
-        if BLOCK_DETECTION_TITLE in content:
-            return True
-            
+        # Проверяем специфичные маркеры страницы блокировки, а не просто текст
+        block_indicators = [
+            BLOCK_DETECTION_TITLE,
+            "Доступ временно ограничен",
+            "Подозрительная активность",
+            "cf-challenge-running",
+            "challenge-form",
+            "data-testid='captcha'",
+        ]
+        for indicator in block_indicators:
+            if indicator in content:
+                logger.debug("[parser][block] Блокировка по индикатору в контенте: %s", indicator)
+                return True
+             
         for selector in BLOCK_DETECTION_SELECTORS:
             try:
                 if await page.query_selector(selector):
+                    logger.debug("[parser][block] Блокировка по селектору: %s", selector)
                     return True
             except Exception:
                 pass
-    except Exception:
-        pass
+        
+        # Дополнительная проверка: если страница почти пустая или редирект на капчу
+        if len(content) < 2000:
+            logger.debug("[parser][block] Подозрительно короткий контент (%d байт)", len(content))
+            # Не считаем это блокировкой автоматически, но логируем
+    except Exception as e:
+        logger.debug("[parser][block] Ошибка при проверке блокировки: %s", e)
     return False
 
 
-async def _handle_block(page, category_id: str, attempt: int) -> bool:
+async def _handle_block(page, category_id: str, attempt: int) -> BlockAction:
     """
     Обрабатывает обнаруженную блокировку.
-    Возвращает True, если стоит повторить попытку, False — если прерывать.
+    Возвращает BlockAction: RETRY, SKIP_CATEGORY или STOP_PARSING.
     """
+    url = page.url
+    title = await page.title()
+    html_len = len(await page.content())
+    
     logger.warning(
-        "[parser][block] Обнаружена блокировка для категории %s (попытка %d/%d)",
-        category_id, attempt, MAX_BLOCK_RETRIES
+        "[parser][block] Обнаружена блокировка для категории %s (попытка %d/%d). URL: %s, Title: %s, HTML len: %d",
+        category_id, attempt, MAX_BLOCK_RETRIES, url, title, html_len
     )
     
-    # Уведомление администратора (заглушка — можно интегрировать с ботом)
+    # Уведомление администратора
     logger.critical(
-        "[parser][ALERT] Блокировка на категории %s! Требуется вмешательство администратора.",
-        category_id
+        "[parser][ALERT] Блокировка на категории %s! URL: %s. Требуется вмешательство администратора.",
+        category_id, url
     )
     
     if attempt >= MAX_BLOCK_RETRIES:
-        logger.error("[parser][block] Превышено макс. число попыток (%d) для категории %s", MAX_BLOCK_RETRIES, category_id)
-        return False
+        logger.error(
+            "[parser][block] Превышено макс. число попыток (%d) для категории %s. Останавливаю парсинг полностью.",
+            MAX_BLOCK_RETRIES, category_id
+        )
+        return BlockAction.STOP_PARSING
     
     # Экспоненциальная задержка с джиттером
     delay = min(BLOCK_RETRY_DELAY_BASE * (2 ** (attempt - 1)) + random.uniform(0, 10), BLOCK_RETRY_DELAY_MAX)
@@ -121,7 +153,7 @@ async def _handle_block(page, category_id: str, attempt: int) -> bool:
     except Exception as e:
         logger.warning("[parser][block] Ошибка при смене UA/перезагрузке: %s", e)
     
-    return True
+    return BlockAction.RETRY
 
 
 # Улучшенный JS с множественными fallback селекторами
@@ -251,8 +283,8 @@ _EXTRACT_JS = """
 """
 
 
-async def _fetch_orders_for_category(page, category_id: str) -> list[dict]:
-    """Переходит на страницу категории и возвращает заказы."""
+async def _fetch_orders_for_category(page, category_id: str) -> tuple[list[dict], BlockAction]:
+    """Переходит на страницу категории и возвращает заказы и действие при блокировке."""
     url = f"{KWORK_BASE_URL}?fc={category_id}"
     logger.info("[parser] Перехожу на URL: %s", url)
 
@@ -264,8 +296,11 @@ async def _fetch_orders_for_category(page, category_id: str) -> list[dict]:
             
             # Проверка на блокировку сразу после загрузки
             if await _is_blocked(page):
-                if not await _handle_block(page, category_id, attempt):
-                    return []
+                action = await _handle_block(page, category_id, attempt)
+                if action == BlockAction.STOP_PARSING:
+                    return [], BlockAction.STOP_PARSING
+                elif action == BlockAction.SKIP_CATEGORY:
+                    return [], BlockAction.SKIP_CATEGORY
                 continue
             
             # Ждём загрузки страницы (не обязательно наличие карточек)
@@ -297,7 +332,7 @@ async def _fetch_orders_for_category(page, category_id: str) -> list[dict]:
                     await page.wait_for_timeout(5000)
                     continue
                 else:
-                    return []
+                    return [], BlockAction.SKIP_CATEGORY
             
             break
         except PlaywrightTimeoutError:
@@ -317,17 +352,20 @@ async def _fetch_orders_for_category(page, category_id: str) -> list[dict]:
                     logger.error("[parser][debug] HTML category %s | title: %s | len: %d", category_id, title, len(html))
                 except Exception:
                     pass
-                return []
+                return [], BlockAction.SKIP_CATEGORY
         except Exception as e:
             logger.exception("[parser] Ошибка при переходе на категорию %s: %s", category_id, e)
-            return []
+            return [], BlockAction.SKIP_CATEGORY
 
     logger.info("[parser] Ищу карточки заказов на странице категории %s...", category_id)
     
     # Проверка на блокировку перед парсингом
     if await _is_blocked(page):
-        if not await _handle_block(page, category_id, 1):
-            return []
+        action = await _handle_block(page, category_id, 1)
+        if action == BlockAction.STOP_PARSING:
+            return [], BlockAction.STOP_PARSING
+        elif action == BlockAction.SKIP_CATEGORY:
+            return [], BlockAction.SKIP_CATEGORY
 
     # Пробуем разные селекторы для подсчёта карточек
     card_count_raw = await page.evaluate("""
@@ -350,7 +388,7 @@ async def _fetch_orders_for_category(page, category_id: str) -> list[dict]:
                           category_id, title, html[:5000])
         except Exception:
             pass
-        return []
+        return [], BlockAction.SKIP_CATEGORY
 
     orders = await page.evaluate(_EXTRACT_JS)
 
@@ -371,7 +409,7 @@ async def _fetch_orders_for_category(page, category_id: str) -> list[dict]:
         except Exception:
             pass
 
-    return orders
+    return orders, BlockAction.RETRY
 
 
 async def fetch_new_orders() -> AsyncGenerator[dict, None]:
@@ -458,18 +496,31 @@ async def fetch_new_orders() -> AsyncGenerator[dict, None]:
                     page.set_default_timeout(30000)
 
                     try:
-                        orders = await _fetch_orders_for_category(page, category_id)
+                        orders, block_action = await _fetch_orders_for_category(page, category_id)
                     except Exception as e:
                         logger.exception("Ошибка при обходе категории %s: %s", category_id, e)
                         await asyncio.sleep(5)
                         continue
 
+                    # Обрабатываем действие при блокировке
+                    if block_action == BlockAction.STOP_PARSING:
+                        logger.error("[parser] Остановка парсинга из-за блокировки на категории %s", category_id)
+                        break
+                    elif block_action == BlockAction.SKIP_CATEGORY:
+                        logger.warning("[parser] Пропуск категории %s из-за ошибки/блокировки", category_id)
+                        # Продолжаем к следующей категории
+                    
                     sent_in_category = 0
 
                     for order in orders:
                         if _shutdown_event.is_set():
                             break
                         order_id = order.get("id")
+                        if not order_id:
+                            continue
+
+                        # Нормализуем ID заказа к строке
+                        order_id = str(order_id).strip()
                         if not order_id:
                             continue
 
@@ -504,6 +555,8 @@ async def fetch_new_orders() -> AsyncGenerator[dict, None]:
                             break
 
                         sent_in_category += 1
+                        # Помечаем заказ как обнаруженный сразу перед yield
+                        mark_order_detected(order_id)
                         yield order
 
                 except Exception as e:

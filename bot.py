@@ -17,7 +17,7 @@ from aiogram.types import (
 from ai_responder import generate_reply
 from config import settings
 from kwork_parser import fetch_new_orders
-from storage import get_order, init_db, save_order, is_seen
+from storage import get_order, init_db, save_order, is_seen, mark_order_detected, OrderState
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +174,8 @@ async def on_generate_reply(callback: CallbackQuery) -> None:
                 parse_mode=None,
                 disable_web_page_preview=True,
             )
+        # Помечаем заказ как полностью обработанный
+        save_order(order, OrderState.PROCESSED)
     except Exception as e:
         logger.error("Ошибка отправки отклика для заказа %s: %s", order_id, e)
         await callback.message.answer("Не удалось отправить отклик. Попробуйте позже.")
@@ -194,7 +196,7 @@ async def notify_new_order(order: dict) -> None:
             parse_mode=None,
         )
     finally:
-        save_order(order)
+        save_order(order, OrderState.NOTIFIED)
 
 
 async def polling_loop() -> None:
@@ -204,9 +206,11 @@ async def polling_loop() -> None:
         try:
             async for order in fetch_new_orders():
                 order_id = order.get("id")
-                if order_id and is_seen(order_id):
-                    logger.debug("Пропуск заказа %s: уже в памяти", order_id)
+                if not order_id:
                     continue
+                # fetch_new_orders уже проверил is_seen и пометил как DETECTED
+                # Здесь дополнительная проверка не нужна, но оставляем для страховки
+                # на случай повторного вызова уведомления
                 try:
                     await notify_new_order(order)
                 except Exception as e:

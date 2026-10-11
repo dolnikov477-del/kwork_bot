@@ -3,6 +3,7 @@ import os
 import logging
 import asyncio
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Optional
 
 from config import settings
@@ -13,6 +14,12 @@ SEEN_ORDERS_FILE = settings.SEEN_ORDERS_FILE
 SEEN_ORDER_TTL_HOURS = settings.SEEN_ORDER_TTL_HOURS
 MAX_SEEN_ORDERS = settings.MAX_SEEN_ORDERS
 SEEN_ORDER_MAX_AGE_DAYS = settings.SEEN_ORDER_MAX_AGE_DAYS
+
+class OrderState(Enum):
+    """Состояния заказа для предотвращения дублей."""
+    DETECTED = "detected"      # Заказ обнаружен парсером
+    NOTIFIED = "notified"      # Уведомление отправлено в Telegram
+    PROCESSED = "processed"    # Заказ полностью обработан (отклик сгенерирован/отправлен)
 
 _orders: dict[str, dict] = {}
 _cleanup_lock = asyncio.Lock()
@@ -111,6 +118,7 @@ def init_db() -> None:
 
 
 def is_seen(order_id: str) -> bool:
+    """Проверяет, был ли заказ уже обнаружен/обработан (любое состояние)."""
     if order_id not in _orders:
         return False
     order = _orders[order_id]
@@ -123,12 +131,45 @@ def is_seen(order_id: str) -> bool:
     return True
 
 
-def save_order(order: dict) -> None:
+def mark_order_detected(order_id: str) -> None:
+    """Помечает заказ как обнаруженный (DETECTED) сразу при парсинге."""
+    order_id = str(order_id).strip()
+    if not order_id:
+        return
+    if order_id in _orders:
+        # Уже есть — обновляем время и состояние если нужно
+        existing = _orders[order_id]
+        existing["seen_at"] = datetime.now(timezone.utc).isoformat()
+        if existing.get("state") == OrderState.PROCESSED.value:
+            return  # Не понижаем состояние
+        existing["state"] = OrderState.DETECTED.value
+        logger.debug("Заказ %s: обновлено состояние на DETECTED", order_id)
+    else:
+        _orders[order_id] = {
+            "id": order_id,
+            "seen_at": datetime.now(timezone.utc).isoformat(),
+            "state": OrderState.DETECTED.value,
+        }
+        logger.debug("Заказ %s: помечен как DETECTED", order_id)
+
+
+def save_order(order: dict, state: OrderState = OrderState.NOTIFIED) -> None:
+    """Сохраняет заказ с указанным состоянием."""
     order_id = order.get("id")
+    if not order_id:
+        return
+    order_id = str(order_id).strip()
     if not order_id:
         return
     stored = dict(order)
     stored["seen_at"] = datetime.now(timezone.utc).isoformat()
+    # Не понижаем состояние: PROCESSED > NOTIFIED > DETECTED
+    current_state = _orders.get(order_id, {}).get("state")
+    state_order = {OrderState.DETECTED.value: 1, OrderState.NOTIFIED.value: 2, OrderState.PROCESSED.value: 3}
+    if current_state and state_order.get(current_state, 0) >= state_order.get(state.value, 0):
+        stored["state"] = current_state
+    else:
+        stored["state"] = state.value
     _orders[order_id] = stored
     try:
         dir_name = os.path.dirname(SEEN_ORDERS_FILE)
@@ -139,7 +180,7 @@ def save_order(order: dict) -> None:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump({"orders": list(_orders.values())}, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, SEEN_ORDERS_FILE)
-        logger.debug("Сохранён заказ %s в %s (всего: %d)", order_id, SEEN_ORDERS_FILE, len(_orders))
+        logger.debug("Сохранён заказ %s в %s (state=%s, всего: %d)", order_id, SEEN_ORDERS_FILE, stored["state"], len(_orders))
         _cleanup_expired()
         _cleanup_if_needed()
         if len(_orders) > MAX_SEEN_ORDERS:
