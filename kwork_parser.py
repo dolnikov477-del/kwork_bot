@@ -31,6 +31,11 @@ USER_AGENTS = [
 
 # Настройки защиты от блокировок
 BLOCK_DETECTION_TITLE = "Доступ заблокирован"
+BLOCK_DETECTION_URLS = [
+    "/not_access.php",
+    "/captcha",
+    "/challenge",
+]
 BLOCK_DETECTION_SELECTORS = [
     "text=Доступ заблокирован",
     ".captcha",
@@ -58,6 +63,27 @@ def _parse_replies_count(text: str) -> int:
     return int(match.group(1)) if match else 0
 
 
+def _normalize_order_id(order_id: str | int | None) -> str | None:
+    """Извлекает числовой ID заказа из строки (URL, href или чистое число)."""
+    if order_id is None:
+        return None
+    s = str(order_id).strip()
+    if not s:
+        return None
+    # Если уже чистое число
+    if s.isdigit():
+        return s
+    # Пытаемся извлечь число из URL типа /projects/12345 или https://kwork.ru/projects/12345
+    match = re.search(r"/projects/(\d+)", s)
+    if match:
+        return match.group(1)
+    # Фоллбек: любые цифры в строке
+    match = re.search(r"(\d+)", s)
+    if match:
+        return match.group(1)
+    return None
+
+
 def _is_too_old(published_at: str, max_age_hours: float = settings.MAX_AGE_HOURS) -> bool:
     if not published_at:
         return False
@@ -76,6 +102,13 @@ def _is_too_old(published_at: str, max_age_hours: float = settings.MAX_AGE_HOURS
 async def _is_blocked(page) -> bool:
     """Проверяет, заблокирован ли доступ (капча, страница блокировки и т.д.)."""
     try:
+        url = page.url
+        # Проверка URL на известные страницы блокировки
+        for block_url in BLOCK_DETECTION_URLS:
+            if block_url in url:
+                logger.warning("[parser][block] Блокировка по URL: %s", url)
+                return True
+        
         title = await page.title()
         if BLOCK_DETECTION_TITLE in title:
             logger.debug("[parser][block] Блокировка по заголовку: %s", title)
@@ -122,9 +155,12 @@ async def _handle_block(page, category_id: str, attempt: int) -> BlockAction:
     title = await page.title()
     html_len = len(await page.content())
     
+    # Проверяем, это "жёсткая" блокировка (страница не доступа), требующая полной остановки
+    is_hard_block = any(block_url in url for block_url in BLOCK_DETECTION_URLS)
+    
     logger.warning(
-        "[parser][block] Обнаружена блокировка для категории %s (попытка %d/%d). URL: %s, Title: %s, HTML len: %d",
-        category_id, attempt, MAX_BLOCK_RETRIES, url, title, html_len
+        "[parser][block] Обнаружена блокировка для категории %s (попытка %d/%d). URL: %s, Title: %s, HTML len: %d, hard_block: %s",
+        category_id, attempt, MAX_BLOCK_RETRIES, url, title, html_len, is_hard_block
     )
     
     # Уведомление администратора
@@ -132,6 +168,14 @@ async def _handle_block(page, category_id: str, attempt: int) -> BlockAction:
         "[parser][ALERT] Блокировка на категории %s! URL: %s. Требуется вмешательство администратора.",
         category_id, url
     )
+    
+    # На жёсткой блокировке (not_access.php и т.д.) — сразу останавливаем парсинг
+    if is_hard_block:
+        logger.error(
+            "[parser][block] Жёсткая блокировка (%s). Останавливаю парсинг полностью.",
+            url
+        )
+        return BlockAction.STOP_PARSING
     
     if attempt >= MAX_BLOCK_RETRIES:
         logger.error(
@@ -268,7 +312,7 @@ _EXTRACT_JS = """
         }
 
         return {
-            id: idMatch ? idMatch[1] : href,
+            id: idMatch ? idMatch[1] : null,
             title,
             description,
             price,
@@ -391,6 +435,17 @@ async def _fetch_orders_for_category(page, category_id: str) -> tuple[list[dict]
         return [], BlockAction.SKIP_CATEGORY
 
     orders = await page.evaluate(_EXTRACT_JS)
+
+    # Нормализуем ID заказов (извлекаем только числовой ID)
+    normalized_orders = []
+    for o in orders:
+        norm_id = _normalize_order_id(o.get('id'))
+        if norm_id:
+            o['id'] = norm_id
+            normalized_orders.append(o)
+        else:
+            logger.warning("[parser] Заказ без валидного ID пропущен: %s", o.get('id'))
+    orders = normalized_orders
 
     logger.info("[parser] Категория %s: распарсено заказов: %d", category_id, len(orders))
     for o in orders:

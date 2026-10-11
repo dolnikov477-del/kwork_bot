@@ -2,6 +2,7 @@ import json
 import os
 import logging
 import asyncio
+import re
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
@@ -14,6 +15,28 @@ SEEN_ORDERS_FILE = settings.SEEN_ORDERS_FILE
 SEEN_ORDER_TTL_HOURS = settings.SEEN_ORDER_TTL_HOURS
 MAX_SEEN_ORDERS = settings.MAX_SEEN_ORDERS
 SEEN_ORDER_MAX_AGE_DAYS = settings.SEEN_ORDER_MAX_AGE_DAYS
+
+
+def _normalize_order_id(order_id: str | int | None) -> str | None:
+    """Извлекает числовой ID заказа из строки (URL, href или чистое число)."""
+    if order_id is None:
+        return None
+    s = str(order_id).strip()
+    if not s:
+        return None
+    # Если уже чистое число
+    if s.isdigit():
+        return s
+    # Пытаемся извлечь число из URL типа /projects/12345 или https://kwork.ru/projects/12345
+    match = re.search(r"/projects/(\d+)", s)
+    if match:
+        return match.group(1)
+    # Фоллбек: любые цифры в строке
+    match = re.search(r"(\d+)", s)
+    if match:
+        return match.group(1)
+    return None
+
 
 class OrderState(Enum):
     """Состояния заказа для предотвращения дублей."""
@@ -119,9 +142,12 @@ def init_db() -> None:
 
 def is_seen(order_id: str) -> bool:
     """Проверяет, был ли заказ уже обнаружен/обработан (любое состояние)."""
-    if order_id not in _orders:
+    norm_id = _normalize_order_id(order_id)
+    if not norm_id:
         return False
-    order = _orders[order_id]
+    if norm_id not in _orders:
+        return False
+    order = _orders[norm_id]
     seen_at = order.get("seen_at")
     if not seen_at:
         return True
@@ -133,24 +159,24 @@ def is_seen(order_id: str) -> bool:
 
 def mark_order_detected(order_id: str) -> None:
     """Помечает заказ как обнаруженный (DETECTED) сразу при парсинге."""
-    order_id = str(order_id).strip()
-    if not order_id:
+    norm_id = _normalize_order_id(order_id)
+    if not norm_id:
         return
-    if order_id in _orders:
+    if norm_id in _orders:
         # Уже есть — обновляем время и состояние если нужно
-        existing = _orders[order_id]
+        existing = _orders[norm_id]
         existing["seen_at"] = datetime.now(timezone.utc).isoformat()
         if existing.get("state") == OrderState.PROCESSED.value:
             return  # Не понижаем состояние
         existing["state"] = OrderState.DETECTED.value
-        logger.debug("Заказ %s: обновлено состояние на DETECTED", order_id)
+        logger.debug("Заказ %s: обновлено состояние на DETECTED", norm_id)
     else:
-        _orders[order_id] = {
-            "id": order_id,
+        _orders[norm_id] = {
+            "id": norm_id,
             "seen_at": datetime.now(timezone.utc).isoformat(),
             "state": OrderState.DETECTED.value,
         }
-        logger.debug("Заказ %s: помечен как DETECTED", order_id)
+        logger.debug("Заказ %s: помечен как DETECTED", norm_id)
 
 
 def save_order(order: dict, state: OrderState = OrderState.NOTIFIED) -> None:
@@ -158,19 +184,20 @@ def save_order(order: dict, state: OrderState = OrderState.NOTIFIED) -> None:
     order_id = order.get("id")
     if not order_id:
         return
-    order_id = str(order_id).strip()
-    if not order_id:
+    norm_id = _normalize_order_id(order_id)
+    if not norm_id:
         return
     stored = dict(order)
     stored["seen_at"] = datetime.now(timezone.utc).isoformat()
     # Не понижаем состояние: PROCESSED > NOTIFIED > DETECTED
-    current_state = _orders.get(order_id, {}).get("state")
+    current_state = _orders.get(norm_id, {}).get("state")
     state_order = {OrderState.DETECTED.value: 1, OrderState.NOTIFIED.value: 2, OrderState.PROCESSED.value: 3}
     if current_state and state_order.get(current_state, 0) >= state_order.get(state.value, 0):
         stored["state"] = current_state
     else:
         stored["state"] = state.value
-    _orders[order_id] = stored
+    stored["id"] = norm_id
+    _orders[norm_id] = stored
     try:
         dir_name = os.path.dirname(SEEN_ORDERS_FILE)
         if dir_name and not os.path.exists(dir_name):
@@ -180,7 +207,7 @@ def save_order(order: dict, state: OrderState = OrderState.NOTIFIED) -> None:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump({"orders": list(_orders.values())}, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, SEEN_ORDERS_FILE)
-        logger.debug("Сохранён заказ %s в %s (state=%s, всего: %d)", order_id, SEEN_ORDERS_FILE, stored["state"], len(_orders))
+        logger.debug("Сохранён заказ %s в %s (state=%s, всего: %d)", norm_id, SEEN_ORDERS_FILE, stored["state"], len(_orders))
         _cleanup_expired()
         _cleanup_if_needed()
         if len(_orders) > MAX_SEEN_ORDERS:
@@ -197,11 +224,14 @@ def save_order(order: dict, state: OrderState = OrderState.NOTIFIED) -> None:
                 json.dump({"orders": list(_orders.values())}, f, ensure_ascii=False, indent=2)
             os.replace(tmp_path, SEEN_ORDERS_FILE)
     except OSError as e:
-        logger.error("Не удалось сохранить заказ %s в %s: %s", order_id, SEEN_ORDERS_FILE, e)
+        logger.error("Не удалось сохранить заказ %s в %s: %s", norm_id, SEEN_ORDERS_FILE, e)
 
 
 def get_order(order_id: str) -> dict | None:
-    return _orders.get(order_id)
+    norm_id = _normalize_order_id(order_id)
+    if not norm_id:
+        return None
+    return _orders.get(norm_id)
 
 
 def get_all_seen_ids() -> set[str]:

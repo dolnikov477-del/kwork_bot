@@ -2,7 +2,7 @@ import logging
 from typing import Tuple
 
 from config import settings
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, APIError, APIConnectionError, RateLimitError, AuthenticationError, PermissionDeniedError
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +106,21 @@ async def generate_reply(title: str, description: str, price: str = "") -> Tuple
         logger.info("Groq отклик для заказа %s (%d символов, модель=%s)", title[:50], len(reply_text), settings.GROQ_MODEL)
         return reply_text, "ai"
 
+    except AuthenticationError:
+        logger.error("Groq API: ошибка аутентификации (неверный API ключ). Использую шаблон.")
+        return build_fallback_reply(title, description), "fallback_template"
+    except PermissionDeniedError:
+        logger.error("Groq API: доступ запрещён (403 Forbidden). Проверьте настройки сети/VPN/региона. Использую шаблон.")
+        return build_fallback_reply(title, description), "fallback_template"
+    except RateLimitError as e:
+        logger.warning("Groq API: превышен лимит запросов (%s). Использую шаблон.", e)
+        return build_fallback_reply(title, description), "fallback_template"
+    except APIConnectionError as e:
+        logger.warning("Groq API: ошибка соединения (%s). Использую шаблон.", e)
+        return build_fallback_reply(title, description), "fallback_template"
+    except APIError as e:
+        logger.error("Groq API: ошибка API (%s). Использую шаблон.", e)
+        return build_fallback_reply(title, description), "fallback_template"
     except Exception as e:
-        logger.error("Ошибка Groq API: %s, использую шаблонный отклик", e)
+        logger.error("Groq API: неожиданная ошибка (%s). Использую шаблон.", e)
         return build_fallback_reply(title, description), "fallback_template"
