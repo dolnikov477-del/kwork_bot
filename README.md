@@ -31,6 +31,8 @@
 TELEGRAM_BOT_TOKEN=токен_от_botfather
 TELEGRAM_CHAT_ID=твой_id
 GROQ_API_KEY=твой_ключ_groq
+GROQ_MODEL=llama-3.1-8b-instant
+USE_AI=true
 KWORK_CATEGORY_IDS=39,41
 KEYWORDS=сайт,бот,парсинг,лендинг
 ```

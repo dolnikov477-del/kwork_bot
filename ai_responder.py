@@ -2,6 +2,7 @@ import logging
 from typing import Tuple
 
 from config import settings
+from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -15,14 +16,12 @@ def _extract_action_and_details(title: str, description: str) -> Tuple[str, str]
             if kw in text:
                 return entry["action"], entry["details"]
 
-    # Фоллбэк — пробуем выхватить глагол из начала title
     import re
-    verbs = ["сделать", "создать", "разработать", "написать", "спарсить", "спарсить", "перевести",
-             "нарисовать", "нарисовать", "смонтировать", "смонтировать", "настроить", "интегрировать",
-             "автоматизировать", "разработать", "подготовить", "подобрать", "найти", "собрать"]
+    verbs = ["сделать", "создать", "разработать", "написать", "спарсить", "перевести",
+             "нарисовать", "смонтировать", "настроить", "интегрировать",
+             "автоматизировать", "подготовить", "подобрать", "найти", "собрать"]
     for v in verbs:
         if v in title.lower():
-            # Выхватываем пару слов после глагола
             match = re.search(rf"{v}\s+(.+?)(?:\.|,|$)", title.lower())
             detail = match.group(1)[:60] if match else "данную задачу"
             return v, detail
@@ -40,17 +39,73 @@ def build_fallback_reply(title: str, description: str = "") -> str:
     )
 
 
+def _build_prompt(title: str, description: str, price: str = "") -> str:
+    """Формирует промпт для генерации отклика через ИИ."""
+    parts = [
+        "Ты — опытный фрилансер на Kwork. Напиши отклик на заказ клиента.",
+        "",
+        f"Название заказа: {title}",
+    ]
+    if description:
+        parts.append(f"Описание: {description}")
+    if price:
+        parts.append(f"Бюджет: {price}")
+    parts.extend([
+        "",
+        "Требования к отклику:",
+        "- Пиши на русском языке, естественно и по делу.",
+        "- Покажи понимание задачи и предложи конкретный подход.",
+        "- Будь кратким, без воды и шаблонных фраз.",
+        "- Не выдумывай опыт, портфолио, гарантии, которых нет в данных.",
+        "- Не пиши, что задача уже выполнена.",
+        "- Не добавляй пояснения от себя, заголовки, Markdown.",
+        "- Верни только текст готового отклика для клиента.",
+    ])
+    return "\n".join(parts)
+
+
 async def generate_reply(title: str, description: str, price: str = "") -> Tuple[str, str]:
-    """Возвращает отклик с подставленными action/details."""
+    """Генерирует отклик через Groq API или возвращает шаблон как фоллбэк."""
     if not title or not title.strip():
         logger.error("Пустой заголовок заказа")
         return "Ошибка: не указан заголовок заказа", "fallback_template"
 
-    action, details = _extract_action_and_details(title, description)
-    reply = settings.FALLBACK_TEMPLATE.format(
-        title=title,
-        action=action,
-        details=details
+    if not settings.USE_AI:
+        logger.info("USE_AI=false, использую шаблонный отклик")
+        return build_fallback_reply(title, description), "fallback_template"
+
+    if not settings.GROQ_API_KEY:
+        logger.warning("GROQ_API_KEY не задан, использую шаблонный отклик")
+        return build_fallback_reply(title, description), "fallback_template"
+
+    client = AsyncOpenAI(
+        api_key=settings.GROQ_API_KEY,
+        base_url="https://api.groq.com/openai/v1",
     )
-    logger.info("Шаблонный отклик для заказа %s (action=%s, %d символов)", title, action, len(reply))
-    return reply, "fallback_template"
+
+    prompt = _build_prompt(title, description, price)
+
+    try:
+        response = await client.chat.completions.create(
+            model=settings.GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": "Ты пишешь отклики на заказы фрилансера. Только текст отклика, без лишних слов."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+            max_tokens=500,
+            timeout=30.0,
+        )
+
+        reply_text = response.choices[0].message.content
+        if not reply_text or not reply_text.strip():
+            logger.warning("Пустой ответ от Groq API, использую шаблон")
+            return build_fallback_reply(title, description), "fallback_template"
+
+        reply_text = reply_text.strip()
+        logger.info("Groq отклик для заказа %s (%d символов, модель=%s)", title[:50], len(reply_text), settings.GROQ_MODEL)
+        return reply_text, "ai"
+
+    except Exception as e:
+        logger.error("Ошибка Groq API: %s, использую шаблонный отклик", e)
+        return build_fallback_reply(title, description), "fallback_template"

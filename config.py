@@ -16,14 +16,11 @@ class Settings:
 
     # ИИ настройки
     USE_AI: bool = os.getenv("USE_AI", "false").lower() == "true"
-    GEMINI_PROXY_URL: str = os.getenv("GEMINI_PROXY_URL", "")  # Cloudflare Worker URL для обхода блокировки в РФ
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-
-    # Модели Gemini в порядке приоритета (fallback chain)
-    GEMINI_MODELS: list[str] = _split_csv(os.getenv("GEMINI_MODELS", "gemini-3.8-flash,gemini-2.5-flash,gemini-2.5-flash-lite"))
+    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
     # Ретраи и параллелизм
-    MAX_ATTEMPTS_PER_MODEL: int = int(os.getenv("MAX_ATTEMPTS_PER_MODEL", "5"))
+    MAX_ATTEMPTS_PER_MODEL: int = int(os.getenv("MAX_ATTEMPTS_PER_MODEL", "3"))
     MAX_CONCURRENT_REQUESTS: int = int(os.getenv("MAX_CONCURRENT_REQUESTS", "2"))
     REQUEST_START_DELAY: float = float(os.getenv("REQUEST_START_DELAY", "0.5"))
 
